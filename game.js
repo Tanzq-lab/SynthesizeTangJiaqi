@@ -1,5 +1,8 @@
 (function () {
-  var globalScope = typeof GameGlobal !== "undefined" ? GameGlobal : globalThis;
+  var globalScope = typeof GameGlobal !== "undefined" ? GameGlobal :
+    typeof window !== "undefined" ? window :
+    typeof self !== "undefined" ? self :
+    typeof global !== "undefined" ? global : this;
   var ttApi = typeof tt !== "undefined" ? tt : null;
 
   var STAGE_WIDTH = 450;
@@ -134,11 +137,38 @@
     };
   }
 
+  function getNavigatorInfo() {
+    return globalScope && globalScope.navigator ? globalScope.navigator : {};
+  }
+
+  function getAndroidVersion() {
+    var ua = String(getNavigatorInfo().userAgent || "");
+    var match = ua.match(/Android\s+([0-9.]+)/i);
+    return match && match[1] ? parseFloat(match[1]) || 0 : 0;
+  }
+
+  function detectCompatProfile() {
+    var nav = getNavigatorInfo();
+    var androidVersion = getAndroidVersion();
+    var memory = Number(nav.deviceMemory || 0);
+    var isOldAndroid = androidVersion > 0 && androidVersion <= 8.1;
+    var lowMemory = memory > 0 && memory <= 3;
+    return {
+      isOldAndroid: isOldAndroid,
+      lowEnd: isOldAndroid || lowMemory,
+      maxPixelRatio: isOldAndroid ? 1.5 : lowMemory ? 2 : 3
+    };
+  }
+
   var canvas = ttApi && typeof ttApi.createCanvas === "function" ? ttApi.createCanvas() : createBrowserCanvas();
   if (!canvas) {
     throw new Error("Canvas is unavailable.");
   }
   var context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas 2D context is unavailable.");
+  }
+  var compatProfile = detectCompatProfile();
   var requestFrame = globalScope.requestAnimationFrame || globalScope.webkitRequestAnimationFrame || function (callback) {
     return setTimeout(function () {
       callback(Date.now());
@@ -172,6 +202,8 @@
   var nextLevel = pickSpawnLevel();
   var score = 0;
   var highScore = readHighScore();
+  var pendingHighScoreValue = highScore;
+  var highScoreWriteTimer = null;
   var mode = "home";
   var cooldownMs = 0;
   var dangerMs = 0;
@@ -594,13 +626,23 @@
 
   function resizeCanvas() {
     var info = getSystemInfo();
-    viewWidth = Math.max(1, info.windowWidth || canvas.width || STAGE_WIDTH);
-    viewHeight = Math.max(1, info.windowHeight || canvas.height || STAGE_HEIGHT);
-    pixelRatio = Math.max(1, Math.min(3, info.pixelRatio || 1));
-    canvas.width = Math.floor(viewWidth * pixelRatio);
-    canvas.height = Math.floor(viewHeight * pixelRatio);
-    canvas.style && (canvas.style.width = viewWidth + "px");
-    canvas.style && (canvas.style.height = viewHeight + "px");
+    var nextViewWidth = Math.max(1, info.windowWidth || canvas.width || STAGE_WIDTH);
+    var nextViewHeight = Math.max(1, info.windowHeight || canvas.height || STAGE_HEIGHT);
+    var nextPixelRatio = Math.max(1, Math.min(compatProfile.maxPixelRatio || 3, info.pixelRatio || 1));
+    var nextCanvasWidth = Math.floor(nextViewWidth * nextPixelRatio);
+    var nextCanvasHeight = Math.floor(nextViewHeight * nextPixelRatio);
+
+    viewWidth = nextViewWidth;
+    viewHeight = nextViewHeight;
+    pixelRatio = nextPixelRatio;
+    if (canvas.width !== nextCanvasWidth) {
+      canvas.width = nextCanvasWidth;
+    }
+    if (canvas.height !== nextCanvasHeight) {
+      canvas.height = nextCanvasHeight;
+    }
+    canvas.style && canvas.style.width !== viewWidth + "px" && (canvas.style.width = viewWidth + "px");
+    canvas.style && canvas.style.height !== viewHeight + "px" && (canvas.style.height = viewHeight + "px");
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     stageScale = Math.min(viewWidth / STAGE_WIDTH, viewHeight / STAGE_HEIGHT);
     stageOffsetX = (viewWidth - STAGE_WIDTH * stageScale) / 2;
@@ -631,6 +673,25 @@
     } catch (error) {
       return;
     }
+  }
+
+  function flushHighScoreWrite() {
+    if (highScoreWriteTimer) {
+      clearTimeout(highScoreWriteTimer);
+      highScoreWriteTimer = null;
+    }
+    writeHighScore(pendingHighScoreValue);
+  }
+
+  function scheduleHighScoreWrite(value) {
+    pendingHighScoreValue = value;
+    if (highScoreWriteTimer) {
+      return;
+    }
+    highScoreWriteTimer = setTimeout(function () {
+      highScoreWriteTimer = null;
+      writeHighScore(pendingHighScoreValue);
+    }, 1000);
   }
 
   function clamp(value, min, max) {
@@ -669,6 +730,38 @@
     return globalScope && globalScope.H5MetaApi ? globalScope.H5MetaApi : null;
   }
 
+  function getLeyuanSdkLoader() {
+    return globalScope && globalScope.POLO_LEYUAN_SDK_LOADER ? globalScope.POLO_LEYUAN_SDK_LOADER : null;
+  }
+
+  function loadLeyuanAdSdkIfNeeded() {
+    if (!isRealLeyuanSdkEnabled() || getMetaH5AdApi()) {
+      return Promise.resolve();
+    }
+    var loader = getLeyuanSdkLoader();
+    if (!loader || typeof loader.loadAd !== "function") {
+      return Promise.resolve();
+    }
+    return loader.loadAd().then(function () {
+      return null;
+    }).catch(function () {
+      return null;
+    });
+  }
+
+  function loadLeyuanIapSdkIfNeeded() {
+    if (!isRealLeyuanSdkEnabled() || getH5MetaApi()) {
+      return Promise.resolve();
+    }
+    var loader = getLeyuanSdkLoader();
+    if (!loader || typeof loader.loadIap !== "function") {
+      return Promise.resolve();
+    }
+    return loader.loadIap().then(function () {
+      return null;
+    });
+  }
+
   function withSdkTimeout(promise, timeoutMs, message) {
     if (!timeoutMs || timeoutMs <= 0) {
       return promise;
@@ -701,22 +794,24 @@
   }
 
   function callH5MetaApi(method, args, timeoutMs, timeoutMessage) {
-    var promise = new Promise(function (resolve, reject) {
-      var api = getH5MetaApi();
-      if (!api || typeof api[method] !== "function") {
-        reject(new Error("当前环境不支持派对币支付"));
-        return;
-      }
-      try {
-        var result = api[method].apply(api, args || []);
-        if (result && typeof result.then === "function") {
-          result.then(resolve).catch(reject);
-        } else {
-          resolve(result);
+    var promise = loadLeyuanIapSdkIfNeeded().then(function () {
+      return new Promise(function (resolve, reject) {
+        var api = getH5MetaApi();
+        if (!api || typeof api[method] !== "function") {
+          reject(new Error("当前环境不支持派对币支付"));
+          return;
         }
-      } catch (error) {
-        reject(error);
-      }
+        try {
+          var result = api[method].apply(api, args || []);
+          if (result && typeof result.then === "function") {
+            result.then(resolve).catch(reject);
+          } else {
+            resolve(result);
+          }
+        } catch (error) {
+          reject(error);
+        }
+      });
     });
     return withSdkTimeout(promise, timeoutMs, timeoutMessage);
   }
@@ -801,59 +896,63 @@
   }
 
   function checkRewardAdSupport() {
-    var adApi = getMetaH5AdApi();
-    if (!adApi || typeof adApi.isAdSupport !== "function") {
-      return Promise.resolve(false);
-    }
-    return new Promise(function (resolve) {
-      var resolved = false;
-      var timer = setTimeout(function () {
-        if (!resolved) {
-          resolved = true;
-          resolve(false);
-        }
-      }, 3000);
-      try {
-        adApi.isAdSupport(REWARD_VIDEO_AD_TYPE, function (result) {
-          if (resolved) {
-            return;
-          }
-          resolved = true;
-          clearTimeout(timer);
-          resolve(!!(result && result.code === 0 && Number(result.data) === 1));
-        });
-      } catch (error) {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          resolve(false);
-        }
+    return loadLeyuanAdSdkIfNeeded().then(function () {
+      var adApi = getMetaH5AdApi();
+      if (!adApi || typeof adApi.isAdSupport !== "function") {
+        return false;
       }
+      return new Promise(function (resolve) {
+        var resolved = false;
+        var timer = setTimeout(function () {
+          if (!resolved) {
+            resolved = true;
+            resolve(false);
+          }
+        }, 3000);
+        try {
+          adApi.isAdSupport(REWARD_VIDEO_AD_TYPE, function (result) {
+            if (resolved) {
+              return;
+            }
+            resolved = true;
+            clearTimeout(timer);
+            resolve(!!(result && result.code === 0 && Number(result.data) === 1));
+          });
+        } catch (error) {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve(false);
+          }
+        }
+      });
     });
   }
 
   function showRewardAd() {
-    var adApi = getMetaH5AdApi();
-    if (!adApi || typeof adApi.showAd !== "function") {
-      return Promise.reject(new Error("当前环境不支持广告继续"));
-    }
-    return new Promise(function (resolve, reject) {
-      try {
-        adApi.showAd(REWARD_VIDEO_AD_TYPE, function (result) {
-          if (!result || result.code !== 0) {
-            resolve({ success: false, message: "广告播放失败，请稍后重试" });
-            return;
-          }
-          var status = result.data && typeof result.data.status !== "undefined" ? Number(result.data.status) : -1;
-          if (status === REWARD_VIDEO_STATUS_REWARDED) {
-            resolve({ success: true, status: status });
-            return;
-          }
-          resolve({ success: false, status: status, message: "看完广告才能继续游戏" });
-        });
-      } catch (error) {
-        reject(error);
+    return loadLeyuanAdSdkIfNeeded().then(function () {
+      var adApi = getMetaH5AdApi();
+      if (!adApi || typeof adApi.showAd !== "function") {
+        return Promise.reject(new Error("当前环境不支持广告继续"));
       }
+      return new Promise(function (resolve, reject) {
+        try {
+          adApi.showAd(REWARD_VIDEO_AD_TYPE, function (result) {
+            if (!result || result.code !== 0) {
+              resolve({ success: false, message: "广告播放失败，请稍后重试" });
+              return;
+            }
+            var status = result.data && typeof result.data.status !== "undefined" ? Number(result.data.status) : -1;
+            if (status === REWARD_VIDEO_STATUS_REWARDED) {
+              resolve({ success: true, status: status });
+              return;
+            }
+            resolve({ success: false, status: status, message: "看完广告才能继续游戏" });
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
     });
   }
 
@@ -1081,7 +1180,7 @@
     score += value + bonus;
     if (score > highScore) {
       highScore = score;
-      writeHighScore(highScore);
+      scheduleHighScoreWrite(highScore);
     }
   }
 
@@ -2463,6 +2562,32 @@
     }
   }
 
+  var lastPointerFallbackAt = 0;
+  var resizeCanvasTimer = null;
+
+  function rememberPointerEvent() {
+    lastPointerFallbackAt = Date.now();
+  }
+
+  function shouldIgnoreFallbackTouch() {
+    return Date.now() - lastPointerFallbackAt < 650;
+  }
+
+  function getTouchPoint(event) {
+    return event && event.touches && event.touches[0] ? event.touches[0] :
+      event && event.changedTouches && event.changedTouches[0] ? event.changedTouches[0] : null;
+  }
+
+  function scheduleResizeCanvas() {
+    if (resizeCanvasTimer) {
+      clearTimeout(resizeCanvasTimer);
+    }
+    resizeCanvasTimer = setTimeout(function () {
+      resizeCanvasTimer = null;
+      resizeCanvas();
+    }, 80);
+  }
+
   if (ttApi) {
     ttApi.onTouchStart(function (event) {
       var touch = event.touches && event.touches[0];
@@ -2478,6 +2603,7 @@
     });
   } else if (typeof document !== "undefined") {
     canvas.addEventListener("pointerdown", function (event) {
+      rememberPointerEvent();
       if (event && typeof event.preventDefault === "function") {
         event.preventDefault();
       }
@@ -2491,6 +2617,49 @@
       onTouchStart(event.clientX, event.clientY);
     });
     canvas.addEventListener("pointermove", function (event) {
+      rememberPointerEvent();
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      onTouchMove(event.clientX);
+    });
+    canvas.addEventListener("touchstart", function (event) {
+      if (shouldIgnoreFallbackTouch()) {
+        return;
+      }
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      var touch = getTouchPoint(event);
+      if (touch) {
+        onTouchStart(touch.clientX, touch.clientY);
+      }
+    }, { passive: false });
+    canvas.addEventListener("touchmove", function (event) {
+      if (shouldIgnoreFallbackTouch()) {
+        return;
+      }
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      var touch = getTouchPoint(event);
+      if (touch) {
+        onTouchMove(touch.clientX);
+      }
+    }, { passive: false });
+    canvas.addEventListener("mousedown", function (event) {
+      if (shouldIgnoreFallbackTouch()) {
+        return;
+      }
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      onTouchStart(event.clientX, event.clientY);
+    });
+    canvas.addEventListener("mousemove", function (event) {
+      if (shouldIgnoreFallbackTouch()) {
+        return;
+      }
       if (event && typeof event.preventDefault === "function") {
         event.preventDefault();
       }
@@ -2522,7 +2691,10 @@
         playUiSound();
       }
     });
-    window.addEventListener("resize", resizeCanvas);
+    window.addEventListener("resize", scheduleResizeCanvas);
+    window.addEventListener("orientationchange", scheduleResizeCanvas);
+    window.addEventListener("pagehide", flushHighScoreWrite);
+    window.addEventListener("beforeunload", flushHighScoreWrite);
   }
 
   function tick(time) {

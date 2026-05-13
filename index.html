@@ -30,6 +30,10 @@
 
     body {
       position: fixed;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
       inset: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     }
@@ -53,6 +57,10 @@
 
     noscript {
       position: fixed;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
       inset: 0;
       display: grid;
       place-items: center;
@@ -65,14 +73,26 @@
     }
 
     :root {
-      --boot-safe-top: calc(env(safe-area-inset-top, 0px) + 50px);
-      --boot-safe-right: calc(env(safe-area-inset-right, 0px) + 50px);
-      --boot-safe-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+      --boot-safe-top: 50px;
+      --boot-safe-right: 50px;
+      --boot-safe-bottom: 28px;
       --boot-progress: 0.12;
+    }
+
+    @supports (top: env(safe-area-inset-top)) {
+      :root {
+        --boot-safe-top: calc(env(safe-area-inset-top, 0px) + 50px);
+        --boot-safe-right: calc(env(safe-area-inset-right, 0px) + 50px);
+        --boot-safe-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+      }
     }
 
     #boot-overlay {
       position: fixed;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
       inset: 0;
       z-index: 9999;
       background: #050816;
@@ -91,6 +111,10 @@
     .boot-splash picture,
     .boot-splash img {
       position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
       inset: 0;
       width: 100%;
       height: 100%;
@@ -127,6 +151,7 @@
     .boot-notice-title {
       margin: 0;
       color: #ffdd00;
+      font-size: 26px;
       font-size: clamp(24px, 4.8vw, 28px);
       line-height: 1.1;
       font-weight: 800;
@@ -143,6 +168,7 @@
     .boot-notice-copy {
       margin: 0;
       color: #fff;
+      font-size: 15px;
       font-size: clamp(14px, 3.3vw, 16px);
       line-height: 1.75;
       text-align: center;
@@ -155,7 +181,8 @@
     }
 
     .boot-progress-wrap {
-      width: min(72vw, 320px);
+      width: 72vw;
+      max-width: 320px;
       display: grid;
       row-gap: 8px;
       justify-items: center;
@@ -188,8 +215,15 @@
 
     @media (max-width: 520px) {
       :root {
-        --boot-safe-top: calc(env(safe-area-inset-top, 0px) + 20px);
-        --boot-safe-right: calc(env(safe-area-inset-right, 0px) + 20px);
+        --boot-safe-top: 20px;
+        --boot-safe-right: 20px;
+      }
+
+      @supports (top: env(safe-area-inset-top)) {
+        :root {
+          --boot-safe-top: calc(env(safe-area-inset-top, 0px) + 20px);
+          --boot-safe-right: calc(env(safe-area-inset-right, 0px) + 20px);
+        }
       }
 
       .boot-notice {
@@ -270,19 +304,134 @@
         }, 120);
       }
 
+      function setBootText(text) {
+        if (progressText) {
+          progressText.textContent = text;
+        }
+      }
+
+      function markSlowBoot() {
+        if (overlayClosed || gameReady) {
+          return;
+        }
+        setProgress(0.92);
+        setBootText("加载较慢，正在启用兼容模式...");
+      }
+
+      function markBootError(message) {
+        if (overlayClosed || gameReady) {
+          return;
+        }
+        setProgress(0.92);
+        setBootText(message || "加载异常，请刷新重试");
+        root.classList.remove("booting");
+      }
+
       window.__gameBootScreen = {
         markGameReady: function () {
           gameReady = true;
           maybeCloseOverlay();
-        }
+        },
+        markBootError: markBootError
       };
+
+      window.addEventListener("error", function () {
+        markBootError("加载异常，请刷新重试");
+      });
+      window.addEventListener("unhandledrejection", function () {
+        markBootError("加载异常，请刷新重试");
+      });
 
       startProgressLoop();
       setTimeout(maybeCloseOverlay, splashDuration);
+      setTimeout(markSlowBoot, 3600);
+      setTimeout(function () {
+        markBootError("加载超时，请刷新重试");
+      }, 12000);
     })();
   </script>
-  <script src="https://cdn.233xyx.com/h5ad/metah5ad_v1.min.js"></script>
-  <script src="https://wstatic-01-ali.233leyuan.com/common/h5API/mta-h5-api.js" type="module"></script>
+  <script>
+    (function () {
+      var SDK_TIMEOUT_MS = 10000;
+      var sdkState = {};
+
+      function supportsModuleScript() {
+        var script = document.createElement("script");
+        return "noModule" in script;
+      }
+
+      function loadScript(key, url, options) {
+        options = options || {};
+        if (options.type === "module" && !supportsModuleScript()) {
+          sdkState[key] = { status: "unsupported" };
+          return Promise.reject(new Error(key + " SDK 当前浏览器不支持 module 脚本"));
+        }
+        if (options.globalName && window[options.globalName]) {
+          sdkState[key] = { status: "ready" };
+          return Promise.resolve(window[options.globalName]);
+        }
+        if (sdkState[key] && sdkState[key].promise) {
+          return sdkState[key].promise;
+        }
+        sdkState[key] = { status: "loading" };
+        sdkState[key].promise = new Promise(function (resolve, reject) {
+          var settled = false;
+          var script = document.createElement("script");
+          var timer = setTimeout(function () {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            sdkState[key].status = "failed";
+            reject(new Error(key + " SDK 加载超时"));
+          }, options.timeout || SDK_TIMEOUT_MS);
+
+          script.async = true;
+          script.src = url;
+          if (options.type) {
+            script.type = options.type;
+          }
+          script.onload = function () {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            sdkState[key].status = "ready";
+            resolve(options.globalName ? window[options.globalName] : true);
+          };
+          script.onerror = function () {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            sdkState[key].status = "failed";
+            reject(new Error(key + " SDK 加载失败"));
+          };
+          document.head.appendChild(script);
+        });
+        return sdkState[key].promise;
+      }
+
+      window.POLO_LEYUAN_SDK_LOADER = {
+        state: sdkState,
+        loadAd: function () {
+          return loadScript("MetaH5Ad", "https://cdn.233xyx.com/h5ad/metah5ad_v1.min.js", {
+            globalName: "MetaH5Ad",
+            timeout: SDK_TIMEOUT_MS
+          });
+        },
+        loadIap: function () {
+          return loadScript("H5MetaApi", "https://wstatic-01-ali.233leyuan.com/common/h5API/mta-h5-api.js", {
+            globalName: "H5MetaApi",
+            type: "module",
+            timeout: SDK_TIMEOUT_MS
+          });
+        }
+      };
+    })();
+  </script>
   <script src="./game.js"></script>
 </body>
 </html>
