@@ -37,7 +37,7 @@
   if (typeof globalScope.POLO_ENABLE_REAL_LEYUAN_SDK === "undefined") {
     globalScope.POLO_ENABLE_REAL_LEYUAN_SDK = true;
   }
-  var LEYUAN_APP_KEY = "94cca53898b64ef08b42714f9674b5fb";
+  var LEYUAN_APP_KEY = "d77c1cd0375146fca7060217d710a017";
   var LEYUAN_CP_ID = "169040";
   var REVIVE_IAP_PRODUCT = {
     productCode: "poloball_revive_100_party_coin",
