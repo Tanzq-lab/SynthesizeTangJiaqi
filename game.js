@@ -1611,7 +1611,7 @@
     drawRadialGlow(STAGE_WIDTH / 2, 350, 0, 240, "rgba(35,247,255,0.12)", "rgba(35,247,255,0)");
 
     drawPanel(30, 36, STAGE_WIDTH - 60, 92, 18, "rgba(83,20,168,0.86)", "rgba(255,255,255,0.16)", 0);
-    drawTextStroke("快来玩梗", 52, 78, "900 34px sans-serif", "#ffffff", "#111111", 4, "left");
+    drawTextStroke("合成唐佳琪", 52, 78, "900 34px sans-serif", "#ffffff", "#111111", 4, "left");
     context.textAlign = "left";
     context.font = "800 15px sans-serif";
     context.fillStyle = "#fff23b";
@@ -1682,7 +1682,7 @@
 
   function drawHud() {
     context.save();
-    drawTextStroke("快来玩梗", STAGE_WIDTH / 2, 18, "900 18px sans-serif", "#fff23b", "#111111", 4, "center");
+    drawTextStroke("合成唐佳琪", STAGE_WIDTH / 2, 18, "900 18px sans-serif", "#fff23b", "#111111", 4, "center");
 
     drawPanel(16, 30, 132, 58, 16, "#151522", "#111111", 6);
     context.textAlign = "left";
