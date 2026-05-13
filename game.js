@@ -32,6 +32,20 @@
   var FIRST_SPAWN_POPUP_MIN_LEVEL = 7;
   var FIRST_SPAWN_POPUP_MAX_LEVEL = 9;
   var GENERATION_SOUND_REPEAT_INTERVAL_MS = 400;
+  var LEYUAN_APP_KEY = "94cca53898b64ef08b42714f9674b5fb";
+  var LEYUAN_CP_ID = "169040";
+  var REVIVE_IAP_PRODUCT = {
+    productCode: "poloball_revive_100_party_coin",
+    productName: "100派对币继续游戏",
+    price: 100,
+    cpExtra: "revive_continue"
+  };
+  var PAY_RESULT_CODE_SUCCESS = 0;
+  var PAY_RESULT_CODE_FAILED = 8;
+  var PAY_RESULT_CODE_CANCEL = 10;
+  var REWARD_VIDEO_AD_TYPE = 1;
+  var REWARD_VIDEO_STATUS_REWARDED = 4;
+  var SDK_TIMEOUT_MS = 10000;
 
   var LEVELS = [
     { id: "mouse", name: "Hello", radius: 20, score: 10, color: "#9a7454", image: "minigame/assets/skins/Char_Default_01.png", weight: 34, restitution: 0.16 },
@@ -174,7 +188,15 @@
   var lastPowerupMessage = "";
   var lastPowerupMessageMs = 0;
   var settlementRestartButton = { x: 132, y: 662, w: 186, h: 42 };
-  var settlementContinueButton = { x: 62, y: 598, w: 326, h: 54 };
+  var settlementAdContinueButton = { x: 62, y: 598, w: 156, h: 54 };
+  var settlementIapContinueButton = { x: 232, y: 598, w: 156, h: 54 };
+  var revivePurchaseBusy = false;
+  var revivePurchaseType = "";
+  var reviveStatusText = "";
+  var iapInitPromise = null;
+  var iapLoginPromise = null;
+  var iapInitialized = false;
+  var iapUserInfo = null;
   var pauseButton = { x: 344, y: 88, w: 42, h: 42 };
   var soundButton = { x: 398, y: 88, w: 42, h: 42 };
   var homeStartButton = { x: 70, y: 548, w: 310, h: 58 };
@@ -621,6 +643,345 @@
     return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
   }
 
+  function getRuntimeQueryValue(name) {
+    var loweredName = String(name || "").toLowerCase();
+    if (!loweredName) {
+      return null;
+    }
+    try {
+      if (ttApi && typeof ttApi.getLaunchOptionsSync === "function") {
+        var launchOptions = ttApi.getLaunchOptionsSync() || {};
+        var launchQuery = launchOptions.query || {};
+        for (var launchKey in launchQuery) {
+          if (Object.prototype.hasOwnProperty.call(launchQuery, launchKey) && String(launchKey).toLowerCase() === loweredName) {
+            return launchQuery[launchKey];
+          }
+        }
+      }
+    } catch (error) {
+      // 读取启动参数失败时继续走 URL 参数兜底。
+    }
+    try {
+      if (typeof location !== "undefined" && location.search) {
+        var pairs = location.search.replace(/^\?/, "").split("&");
+        for (var i = 0; i < pairs.length; i += 1) {
+          if (!pairs[i]) {
+            continue;
+          }
+          var parts = pairs[i].split("=");
+          var key = decodeURIComponent(parts[0] || "").toLowerCase();
+          if (key === loweredName) {
+            return decodeURIComponent(parts.slice(1).join("=") || "");
+          }
+        }
+      }
+    } catch (error) {
+      return null;
+    }
+    return null;
+  }
+
+  function isTruthyRuntimeFlag(value) {
+    if (value === true) {
+      return true;
+    }
+    var text = String(value == null ? "" : value).toLowerCase();
+    return text === "1" || text === "true" || text === "release" || text === "prod" || text === "production" || text === "yes";
+  }
+
+  function isReleaseRuntime() {
+    if (typeof globalScope.__POLO_RELEASE__ !== "undefined") {
+      return isTruthyRuntimeFlag(globalScope.__POLO_RELEASE__);
+    }
+    var releaseValue = getRuntimeQueryValue("Release");
+    if (releaseValue == null) {
+      releaseValue = getRuntimeQueryValue("release");
+    }
+    return isTruthyRuntimeFlag(releaseValue);
+  }
+
+  function getMetaH5AdApi() {
+    return globalScope && globalScope.MetaH5Ad ? globalScope.MetaH5Ad : null;
+  }
+
+  function getH5MetaApi() {
+    return globalScope && globalScope.H5MetaApi ? globalScope.H5MetaApi : null;
+  }
+
+  function withSdkTimeout(promise, timeoutMs, message) {
+    if (!timeoutMs || timeoutMs <= 0) {
+      return promise;
+    }
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(new Error(message || "SDK 请求超时"));
+      }, timeoutMs);
+      promise.then(function (value) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      }).catch(function (error) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
+  function callH5MetaApi(method, args, timeoutMs, timeoutMessage) {
+    var promise = new Promise(function (resolve, reject) {
+      var api = getH5MetaApi();
+      if (!api || typeof api[method] !== "function") {
+        reject(new Error("当前环境不支持派对币支付"));
+        return;
+      }
+      try {
+        var result = api[method].apply(api, args || []);
+        if (result && typeof result.then === "function") {
+          result.then(resolve).catch(reject);
+        } else {
+          resolve(result);
+        }
+      } catch (error) {
+        reject(error);
+      }
+    });
+    return withSdkTimeout(promise, timeoutMs, timeoutMessage);
+  }
+
+  function ensureLeyuanIapInitialized() {
+    if (iapInitialized) {
+      return Promise.resolve();
+    }
+    if (iapInitPromise) {
+      return iapInitPromise;
+    }
+    iapInitPromise = callH5MetaApi("init", [LEYUAN_APP_KEY, LEYUAN_CP_ID], SDK_TIMEOUT_MS, "派对币支付初始化超时")
+      .then(function () {
+        iapInitialized = true;
+        iapInitPromise = null;
+      }).catch(function (error) {
+        iapInitialized = false;
+        iapInitPromise = null;
+        throw error;
+      });
+    return iapInitPromise;
+  }
+
+  function ensureLeyuanIapLoggedIn() {
+    if (iapUserInfo) {
+      return Promise.resolve(iapUserInfo);
+    }
+    if (iapLoginPromise) {
+      return iapLoginPromise;
+    }
+    iapLoginPromise = ensureLeyuanIapInitialized().then(function () {
+      return callH5MetaApi("login", [], SDK_TIMEOUT_MS, "派对币支付登录超时");
+    }).then(function (rawData) {
+      iapUserInfo = rawData && rawData.data ? rawData.data : rawData || {};
+      iapLoginPromise = null;
+      return iapUserInfo;
+    }).catch(function (error) {
+      iapLoginPromise = null;
+      throw error;
+    });
+    return iapLoginPromise;
+  }
+
+  function generateIapOrderId() {
+    return "revive_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function normalizePayResult(rawData) {
+    if (typeof rawData === "number") {
+      return { code: 200, msg: "", data: rawData };
+    }
+    return {
+      code: rawData && rawData.code != null ? Number(rawData.code) : 0,
+      msg: rawData && rawData.msg ? String(rawData.msg) : "",
+      data: rawData && rawData.data != null ? Number(rawData.data) : PAY_RESULT_CODE_FAILED
+    };
+  }
+
+  function requestIapRevivePayment() {
+    if (!isReleaseRuntime()) {
+      console.log("[IAP] 非 Release 调试模式，跳过派对币真实支付。添加 ?Release=1 后才会拉起 233 乐园 IAP。 ");
+      return Promise.resolve({ success: true, simulated: true });
+    }
+    return ensureLeyuanIapLoggedIn().then(function () {
+      return callH5MetaApi("pay", [{
+        cpOrderId: generateIapOrderId(),
+        productCode: REVIVE_IAP_PRODUCT.productCode,
+        productName: REVIVE_IAP_PRODUCT.productName,
+        price: REVIVE_IAP_PRODUCT.price,
+        cpExtra: REVIVE_IAP_PRODUCT.cpExtra
+      }], 0, "");
+    }).then(function (rawData) {
+      var result = normalizePayResult(rawData);
+      if (result.data === PAY_RESULT_CODE_SUCCESS) {
+        return { success: true, result: result };
+      }
+      if (result.data === PAY_RESULT_CODE_CANCEL) {
+        return { success: false, cancelled: true, message: "已取消派对币支付" };
+      }
+      return { success: false, message: result.msg ? "派对币支付失败：" + result.msg : "派对币支付失败，请重试" };
+    });
+  }
+
+  function checkRewardAdSupport() {
+    var adApi = getMetaH5AdApi();
+    if (!adApi || typeof adApi.isAdSupport !== "function") {
+      return Promise.resolve(false);
+    }
+    return new Promise(function (resolve) {
+      var resolved = false;
+      var timer = setTimeout(function () {
+        if (!resolved) {
+          resolved = true;
+          resolve(false);
+        }
+      }, 3000);
+      try {
+        adApi.isAdSupport(REWARD_VIDEO_AD_TYPE, function (result) {
+          if (resolved) {
+            return;
+          }
+          resolved = true;
+          clearTimeout(timer);
+          resolve(!!(result && result.code === 0 && Number(result.data) === 1));
+        });
+      } catch (error) {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(false);
+        }
+      }
+    });
+  }
+
+  function showRewardAd() {
+    var adApi = getMetaH5AdApi();
+    if (!adApi || typeof adApi.showAd !== "function") {
+      return Promise.reject(new Error("当前环境不支持广告继续"));
+    }
+    return new Promise(function (resolve, reject) {
+      try {
+        adApi.showAd(REWARD_VIDEO_AD_TYPE, function (result) {
+          if (!result || result.code !== 0) {
+            resolve({ success: false, message: "广告播放失败，请稍后重试" });
+            return;
+          }
+          var status = result.data && typeof result.data.status !== "undefined" ? Number(result.data.status) : -1;
+          if (status === REWARD_VIDEO_STATUS_REWARDED) {
+            resolve({ success: true, status: status });
+            return;
+          }
+          resolve({ success: false, status: status, message: "看完广告才能继续游戏" });
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  function requestAdReviveReward() {
+    if (!isReleaseRuntime()) {
+      console.log("[IAA] 非 Release 调试模式，跳过激励视频真实播放。添加 ?Release=1 后才会拉起 233 乐园 IAA。 ");
+      return Promise.resolve({ success: true, simulated: true });
+    }
+    return checkRewardAdSupport().then(function (supported) {
+      if (!supported) {
+        return { success: false, message: "当前环境不支持广告继续" };
+      }
+      return showRewardAd();
+    });
+  }
+
+  function clearRevivePurchaseState() {
+    revivePurchaseBusy = false;
+    revivePurchaseType = "";
+  }
+
+  function failRevivePurchase(message) {
+    clearRevivePurchaseState();
+    reviveStatusText = message || "继续游戏失败，请稍后重试";
+    playUiSound();
+  }
+
+  function grantReviveAccess() {
+    clearRevivePurchaseState();
+    reviveStatusText = "";
+    if (mode === "gameOver") {
+      showReviveCards();
+    }
+  }
+
+  function startAdReviveFlow() {
+    if (revivePurchaseBusy) {
+      return;
+    }
+    revivePurchaseBusy = true;
+    revivePurchaseType = "ad";
+    reviveStatusText = isReleaseRuntime() ? "正在拉起广告..." : "调试模式：跳过广告继续";
+    playUiSound();
+    requestAdReviveReward().then(function (result) {
+      if (mode !== "gameOver") {
+        clearRevivePurchaseState();
+        return;
+      }
+      if (result && result.success) {
+        grantReviveAccess();
+      } else {
+        failRevivePurchase(result && result.message ? result.message : "看完广告才能继续游戏");
+      }
+    }).catch(function (error) {
+      if (mode === "gameOver") {
+        failRevivePurchase(error && error.message ? error.message : "广告播放失败，请稍后重试");
+      } else {
+        clearRevivePurchaseState();
+      }
+    });
+  }
+
+  function startIapReviveFlow() {
+    if (revivePurchaseBusy) {
+      return;
+    }
+    revivePurchaseBusy = true;
+    revivePurchaseType = "iap";
+    reviveStatusText = isReleaseRuntime() ? "正在拉起派对币支付..." : "调试模式：跳过支付继续";
+    playUiSound();
+    requestIapRevivePayment().then(function (result) {
+      if (mode !== "gameOver") {
+        clearRevivePurchaseState();
+        return;
+      }
+      if (result && result.success) {
+        grantReviveAccess();
+      } else {
+        failRevivePurchase(result && result.message ? result.message : "派对币支付失败，请重试");
+      }
+    }).catch(function (error) {
+      if (mode === "gameOver") {
+        failRevivePurchase(error && error.message ? error.message : "派对币支付异常，请稍后重试");
+      } else {
+        clearRevivePurchaseState();
+      }
+    });
+  }
+
   function setPointer(stageX) {
     var radius = LEVELS[previewLevel].radius;
     pointerX = clamp(stageX, radius + 8, STAGE_WIDTH - radius - 8);
@@ -747,6 +1108,8 @@
     selectedPowerCard = null;
     lastPowerupMessage = "";
     lastPowerupMessageMs = 0;
+    clearRevivePurchaseState();
+    reviveStatusText = "";
     pointerX = STAGE_WIDTH / 2;
     previewLevel = pickSpawnLevel();
     nextLevel = pickSpawnLevel();
@@ -1035,6 +1398,8 @@
   }
 
   function showReviveCards() {
+    clearRevivePurchaseState();
+    reviveStatusText = "";
     pickReviveCards();
     selectedPowerCard = selectedCards[0] || null;
     mode = "cardSelect";
@@ -1752,6 +2117,27 @@
     context.restore();
   }
 
+  function drawSettlementContinueButtons() {
+    var adText = revivePurchaseBusy && revivePurchaseType === "ad" ? "广告拉起中" : "看广告继续";
+    var iapText = revivePurchaseBusy && revivePurchaseType === "iap" ? "支付拉起中" : "100派对币继续";
+    var adDisabled = revivePurchaseBusy && revivePurchaseType !== "ad";
+    var iapDisabled = revivePurchaseBusy && revivePurchaseType !== "iap";
+    drawGameButton(
+      settlementAdContinueButton,
+      adText,
+      adDisabled ? "#5c5c6f" : "#ff3d00",
+      adDisabled ? "#8a8a9a" : "#ffe500",
+      16
+    );
+    drawGameButton(
+      settlementIapContinueButton,
+      iapText,
+      iapDisabled ? "#5c5c6f" : "#7a19e8",
+      iapDisabled ? "#8a8a9a" : "#23f7ff",
+      15
+    );
+  }
+
   function drawPowerupMessage() {
     if (!lastPowerupMessage || lastPowerupMessageMs <= 0) return;
     var alpha = Math.min(1, lastPowerupMessageMs / 280);
@@ -1800,7 +2186,10 @@
 
     drawTextStroke("已超越 " + getOvertakePercent() + "% 玩梗玩家", STAGE_WIDTH / 2, panelY + 426, "900 17px sans-serif", "#fff23b", "#111111", 3, "center");
 
-    drawGameButton(settlementContinueButton, "继续游戏", "#ff9f00", "#ffe500", 24);
+    var statusText = reviveStatusText || "选择一种方式继续游戏";
+    drawTextStroke(statusText, STAGE_WIDTH / 2, panelY + 454, "900 14px sans-serif", reviveStatusText ? "#23f7ff" : "#ffffff", "#111111", 3, "center");
+
+    drawSettlementContinueButtons();
     drawGameButton(settlementRestartButton, "重新开始", "#0087ff", "#37f5ff", 18);
     context.restore();
   }
@@ -2041,8 +2430,12 @@
         playUiSound();
         return;
       }
-      if (hitRect(point, settlementContinueButton)) {
-        showReviveCards();
+      if (hitRect(point, settlementAdContinueButton)) {
+        startAdReviveFlow();
+        return;
+      }
+      if (hitRect(point, settlementIapContinueButton)) {
+        startIapReviveFlow();
         return;
       }
       return;
@@ -2162,7 +2555,7 @@
         resetGame();
         playUiSound();
       } else if (event.code === "KeyC" && mode === "gameOver") {
-        showReviveCards();
+        startAdReviveFlow();
       } else if (event.code === "KeyP" && mode !== "home") {
         mode = mode === "paused" ? "playing" : "paused";
         playUiSound();
@@ -2185,7 +2578,16 @@
   globalScope.render_game_to_text = function () {
     return JSON.stringify({
       runtime: ttApi ? "douyin-minigame" : "browser-fallback",
+      releaseRuntime: isReleaseRuntime(),
       mode: mode,
+      reviveContinue: {
+        busy: revivePurchaseBusy,
+        type: revivePurchaseType,
+        statusText: reviveStatusText,
+        adButton: settlementAdContinueButton,
+        iapButton: settlementIapContinueButton,
+        iapProduct: REVIVE_IAP_PRODUCT
+      },
       score: score,
       highScore: highScore,
       stats: {
