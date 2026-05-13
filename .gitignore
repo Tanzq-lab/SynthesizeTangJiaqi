@@ -1,0 +1,46 @@
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+output/
+
+# Local runtime and test artifacts
+.playwright-cli/
+test-results/
+tmp/
+temp/
+*.log
+
+# Editor local state
+.idea/
+.vs/
+*.suo
+*.user
+*.userprefs
+
+# Unity legacy artifacts must not return
+/Assets/
+/Packages/
+/ProjectSettings/
+/Library/
+/Logs/
+/Temp/
+/Obj/
+/Build/
+/Builds/
+/UserSettings/
+/MemoryCaptures/
+/Recordings/
+/debug/
+*.meta
+*.csproj
+*.unityproj
+*.sln
+*.unitypackage
+*.apk
+*.aab

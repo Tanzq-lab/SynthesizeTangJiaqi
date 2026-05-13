@@ -1,0 +1,100 @@
+{
+    "description": "Coin Fantasia H5 / Douyin mini-game project",
+    "appid": "tt0b067dbb94088dcc07",
+    "projectname": "硬币狂想曲",
+    "setting": {
+        "es6": true,
+        "urlCheck": true,
+        "autoCompile": true
+    },
+    "packOptions": {
+        "ignore": [
+            {
+                "type": "folder",
+                "value": "node_modules"
+            },
+            {
+                "type": "folder",
+                "value": "dist"
+            },
+            {
+                "type": "folder",
+                "value": "output"
+            },
+            {
+                "type": "folder",
+                "value": "tmp"
+            },
+            {
+                "type": "folder",
+                "value": "src"
+            },
+            {
+                "type": "folder",
+                "value": "docs"
+            },
+            {
+                "type": "folder",
+                "value": "governance"
+            },
+            {
+                "type": "folder",
+                "value": "scripts"
+            },
+            {
+                "type": "folder",
+                "value": ".vscode"
+            },
+            {
+                "type": "folder",
+                "value": "public"
+            },
+            {
+                "type": "file",
+                "value": "index.html"
+            },
+            {
+                "type": "file",
+                "value": "mini-preview.html"
+            },
+            {
+                "type": "file",
+                "value": "README.md"
+            },
+            {
+                "type": "file",
+                "value": "README.en.md"
+            },
+            {
+                "type": "file",
+                "value": "AGENTS.md"
+            },
+            {
+                "type": "file",
+                "value": "progress.md"
+            },
+            {
+                "type": "file",
+                "value": "package.json"
+            },
+            {
+                "type": "file",
+                "value": "package-lock.json"
+            },
+            {
+                "type": "file",
+                "value": "tsconfig.json"
+            },
+            {
+                "type": "file",
+                "value": "vite.config.ts"
+            }
+        ]
+    },
+    "condition": {
+        "game": {
+            "current": -1,
+            "list": []
+        }
+    }
+}
