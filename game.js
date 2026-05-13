@@ -32,6 +32,11 @@
   var FIRST_SPAWN_POPUP_MIN_LEVEL = 7;
   var FIRST_SPAWN_POPUP_MAX_LEVEL = 9;
   var GENERATION_SOUND_REPEAT_INTERVAL_MS = 400;
+  // 233乐园真实 IAA / IAP 开关：本地调试默认 false；正式包改成 true。
+  // 也可以在 index.html 的 game.js 之前提前设置：window.POLO_ENABLE_REAL_LEYUAN_SDK = true;
+  if (typeof globalScope.POLO_ENABLE_REAL_LEYUAN_SDK === "undefined") {
+    globalScope.POLO_ENABLE_REAL_LEYUAN_SDK = true;
+  }
   var LEYUAN_APP_KEY = "94cca53898b64ef08b42714f9674b5fb";
   var LEYUAN_CP_ID = "169040";
   var REVIVE_IAP_PRODUCT = {
@@ -643,61 +648,16 @@
     return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
   }
 
-  function getRuntimeQueryValue(name) {
-    var loweredName = String(name || "").toLowerCase();
-    if (!loweredName) {
-      return null;
-    }
-    try {
-      if (ttApi && typeof ttApi.getLaunchOptionsSync === "function") {
-        var launchOptions = ttApi.getLaunchOptionsSync() || {};
-        var launchQuery = launchOptions.query || {};
-        for (var launchKey in launchQuery) {
-          if (Object.prototype.hasOwnProperty.call(launchQuery, launchKey) && String(launchKey).toLowerCase() === loweredName) {
-            return launchQuery[launchKey];
-          }
-        }
-      }
-    } catch (error) {
-      // 读取启动参数失败时继续走 URL 参数兜底。
-    }
-    try {
-      if (typeof location !== "undefined" && location.search) {
-        var pairs = location.search.replace(/^\?/, "").split("&");
-        for (var i = 0; i < pairs.length; i += 1) {
-          if (!pairs[i]) {
-            continue;
-          }
-          var parts = pairs[i].split("=");
-          var key = decodeURIComponent(parts[0] || "").toLowerCase();
-          if (key === loweredName) {
-            return decodeURIComponent(parts.slice(1).join("=") || "");
-          }
-        }
-      }
-    } catch (error) {
-      return null;
-    }
-    return null;
-  }
-
   function isTruthyRuntimeFlag(value) {
     if (value === true) {
       return true;
     }
     var text = String(value == null ? "" : value).toLowerCase();
-    return text === "1" || text === "true" || text === "release" || text === "prod" || text === "production" || text === "yes";
+    return text === "1" || text === "true" || text === "on" || text === "yes" || text === "prod" || text === "production";
   }
 
-  function isReleaseRuntime() {
-    if (typeof globalScope.__POLO_RELEASE__ !== "undefined") {
-      return isTruthyRuntimeFlag(globalScope.__POLO_RELEASE__);
-    }
-    var releaseValue = getRuntimeQueryValue("Release");
-    if (releaseValue == null) {
-      releaseValue = getRuntimeQueryValue("release");
-    }
-    return isTruthyRuntimeFlag(releaseValue);
+  function isRealLeyuanSdkEnabled() {
+    return isTruthyRuntimeFlag(globalScope.POLO_ENABLE_REAL_LEYUAN_SDK);
   }
 
   function getMetaH5AdApi() {
@@ -815,8 +775,8 @@
   }
 
   function requestIapRevivePayment() {
-    if (!isReleaseRuntime()) {
-      console.log("[IAP] 非 Release 调试模式，跳过派对币真实支付。添加 ?Release=1 后才会拉起 233 乐园 IAP。 ");
+    if (!isRealLeyuanSdkEnabled()) {
+      console.log("[IAP] 调试模式，跳过派对币真实支付。把 POLO_ENABLE_REAL_LEYUAN_SDK 改成 true 后才会拉起 233 乐园 IAP。");
       return Promise.resolve({ success: true, simulated: true });
     }
     return ensureLeyuanIapLoggedIn().then(function () {
@@ -897,8 +857,8 @@
   }
 
   function requestAdReviveReward() {
-    if (!isReleaseRuntime()) {
-      console.log("[IAA] 非 Release 调试模式，跳过激励视频真实播放。添加 ?Release=1 后才会拉起 233 乐园 IAA。 ");
+    if (!isRealLeyuanSdkEnabled()) {
+      console.log("[IAA] 调试模式，跳过激励视频真实播放。把 POLO_ENABLE_REAL_LEYUAN_SDK 改成 true 后才会拉起 233 乐园 IAA。");
       return Promise.resolve({ success: true, simulated: true });
     }
     return checkRewardAdSupport().then(function (supported) {
@@ -934,7 +894,7 @@
     }
     revivePurchaseBusy = true;
     revivePurchaseType = "ad";
-    reviveStatusText = isReleaseRuntime() ? "正在拉起广告..." : "调试模式：跳过广告继续";
+    reviveStatusText = isRealLeyuanSdkEnabled() ? "正在拉起广告..." : "调试模式：跳过广告继续";
     playUiSound();
     requestAdReviveReward().then(function (result) {
       if (mode !== "gameOver") {
@@ -961,7 +921,7 @@
     }
     revivePurchaseBusy = true;
     revivePurchaseType = "iap";
-    reviveStatusText = isReleaseRuntime() ? "正在拉起派对币支付..." : "调试模式：跳过支付继续";
+    reviveStatusText = isRealLeyuanSdkEnabled() ? "正在拉起派对币支付..." : "调试模式：跳过支付继续";
     playUiSound();
     requestIapRevivePayment().then(function (result) {
       if (mode !== "gameOver") {
@@ -2578,7 +2538,7 @@
   globalScope.render_game_to_text = function () {
     return JSON.stringify({
       runtime: ttApi ? "douyin-minigame" : "browser-fallback",
-      releaseRuntime: isReleaseRuntime(),
+      leyuanSdkEnabled: isRealLeyuanSdkEnabled(),
       mode: mode,
       reviveContinue: {
         busy: revivePurchaseBusy,
@@ -2586,6 +2546,7 @@
         statusText: reviveStatusText,
         adButton: settlementAdContinueButton,
         iapButton: settlementIapContinueButton,
+        sdkSwitchName: "POLO_ENABLE_REAL_LEYUAN_SDK",
         iapProduct: REVIVE_IAP_PRODUCT
       },
       score: score,
