@@ -8,6 +8,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>POLO小球 - H5</title>
+  <script>
+    document.documentElement.classList.add("booting");
+    window.__bootNoticeStartedAt = Date.now();
+  </script>
   <style>
     html,
     body {
@@ -30,6 +34,15 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     }
 
+    html.booting body {
+      visibility: hidden;
+    }
+
+    html.booting #boot-overlay,
+    html.booting #boot-overlay * {
+      visibility: visible !important;
+    }
+
     canvas {
       display: block;
       width: 100vw;
@@ -50,10 +63,224 @@
       padding: 24px;
       box-sizing: border-box;
     }
+
+    :root {
+      --boot-safe-top: calc(env(safe-area-inset-top, 0px) + 50px);
+      --boot-safe-right: calc(env(safe-area-inset-right, 0px) + 50px);
+      --boot-safe-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+      --boot-progress: 0.12;
+    }
+
+    #boot-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: #050816;
+      color: #fff;
+      overflow: hidden;
+      transition: opacity 320ms ease, visibility 320ms ease;
+    }
+
+    #boot-overlay.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .boot-splash,
+    .boot-splash picture,
+    .boot-splash img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    .boot-splash img {
+      object-fit: cover;
+      object-position: center;
+    }
+
+    .boot-age-rating {
+      position: absolute;
+      top: var(--boot-safe-top);
+      right: var(--boot-safe-right);
+      max-height: 60px;
+      width: auto;
+      height: auto;
+    }
+
+    .boot-notice {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 120px 24px var(--boot-safe-bottom);
+      background:
+        linear-gradient(180deg, rgba(5, 8, 22, 0) 0%, rgba(5, 8, 22, 0.72) 28%, rgba(5, 8, 22, 0.94) 100%);
+      display: grid;
+      justify-items: center;
+      row-gap: 14px;
+      box-sizing: border-box;
+    }
+
+    .boot-notice-title {
+      margin: 0;
+      color: #ffdd00;
+      font-size: clamp(24px, 4.8vw, 28px);
+      line-height: 1.1;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-align: center;
+      text-shadow:
+        -2px -2px 0 #000,
+        2px -2px 0 #000,
+        -2px 2px 0 #000,
+        2px 2px 0 #000,
+        0 0 8px rgba(0, 0, 0, 0.45);
+    }
+
+    .boot-notice-copy {
+      margin: 0;
+      color: #fff;
+      font-size: clamp(14px, 3.3vw, 16px);
+      line-height: 1.75;
+      text-align: center;
+      text-shadow:
+        -1px -1px 0 #000,
+        1px -1px 0 #000,
+        -1px 1px 0 #000,
+        1px 1px 0 #000,
+        0 0 6px rgba(0, 0, 0, 0.4);
+    }
+
+    .boot-progress-wrap {
+      width: min(72vw, 320px);
+      display: grid;
+      row-gap: 8px;
+      justify-items: center;
+    }
+
+    .boot-progress-bar {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
+
+    .boot-progress-fill {
+      width: calc(var(--boot-progress) * 100%);
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #67e8d2 0%, #ffb347 100%);
+      transition: width 180ms ease;
+    }
+
+    .boot-progress-text {
+      margin: 0;
+      color: rgba(212, 226, 255, 0.68);
+      font-size: 14px;
+      line-height: 1;
+      letter-spacing: 0.08em;
+    }
+
+    @media (max-width: 520px) {
+      :root {
+        --boot-safe-top: calc(env(safe-area-inset-top, 0px) + 20px);
+        --boot-safe-right: calc(env(safe-area-inset-right, 0px) + 20px);
+      }
+
+      .boot-notice {
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+
+      .boot-age-rating {
+        max-height: 52px;
+      }
+    }
   </style>
 </head>
 <body>
+  <div id="boot-overlay" aria-live="polite">
+    <div class="boot-splash" aria-hidden="true">
+      <picture>
+        <source srcset="./images/splash-portrait.png" media="(orientation: portrait)" />
+        <img src="./images/splash-landscape.png" alt="" />
+      </picture>
+    </div>
+    <img class="boot-age-rating" src="./images/age-rating.png" alt="8+适龄提示" />
+    <div class="boot-notice">
+      <p class="boot-notice-title">健康游戏忠告</p>
+      <p class="boot-notice-copy">抵制不良游戏，拒绝盗版游戏。<br />注意自我保护，谨防受骗上当。<br />适度游戏益脑，沉迷游戏伤身。<br />合理安排时间，享受健康生活。</p>
+      <div class="boot-progress-wrap" aria-hidden="true">
+        <div class="boot-progress-bar">
+          <div class="boot-progress-fill"></div>
+        </div>
+        <p class="boot-progress-text" id="boot-progress-text">加载中...</p>
+      </div>
+    </div>
+  </div>
   <noscript>需要开启 JavaScript 才能运行 POLO小球 H5 版。</noscript>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var overlay = document.getElementById("boot-overlay");
+      var progressText = document.getElementById("boot-progress-text");
+      var splashDuration = 1500;
+      var minNoticeTime = 1000;
+      var bootStartedAt = window.__bootNoticeStartedAt || Date.now();
+      var gameReady = false;
+      var overlayClosed = false;
+      var progressValue = 0.12;
+
+      function setProgress(value) {
+        progressValue = Math.max(progressValue, Math.min(value, 1));
+        root.style.setProperty("--boot-progress", progressValue.toFixed(3));
+      }
+
+      function maybeCloseOverlay() {
+        if (overlayClosed || !gameReady) {
+          return;
+        }
+        var elapsed = Date.now() - bootStartedAt;
+        var remaining = Math.max(0, splashDuration - elapsed, minNoticeTime - elapsed);
+        if (remaining > 0) {
+          setTimeout(maybeCloseOverlay, remaining);
+          return;
+        }
+        overlayClosed = true;
+        setProgress(1);
+        progressText.textContent = "加载完成";
+        overlay.classList.add("is-hidden");
+        root.classList.remove("booting");
+      }
+
+      function startProgressLoop() {
+        var bootProgressTimer = setInterval(function () {
+          if (overlayClosed) {
+            clearInterval(bootProgressTimer);
+            return;
+          }
+          if (!gameReady) {
+            setProgress(Math.min(progressValue + 0.035, 0.9));
+          }
+        }, 120);
+      }
+
+      window.__gameBootScreen = {
+        markGameReady: function () {
+          gameReady = true;
+          maybeCloseOverlay();
+        }
+      };
+
+      startProgressLoop();
+      setTimeout(maybeCloseOverlay, splashDuration);
+    })();
+  </script>
   <script src="https://cdn.233xyx.com/h5ad/metah5ad_v1.min.js"></script>
   <script src="https://wstatic-01-ali.233leyuan.com/common/h5API/mta-h5-api.js" type="module"></script>
   <script src="./game.js"></script>

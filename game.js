@@ -219,6 +219,7 @@
   ];
   var soundEnabled = true;
   var audioUnlocked = false;
+  var bootReadyReported = false;
   var audioContext = null;
   var lastImpactSoundAt = 0;
   var lastDangerSoundAt = 0;
@@ -2532,6 +2533,12 @@
     lastTime = time;
     update(dtMs / 1000, dtMs);
     draw();
+    if (!bootReadyReported) {
+      bootReadyReported = true;
+      if (globalScope.__gameBootScreen && typeof globalScope.__gameBootScreen.markGameReady === "function") {
+        globalScope.__gameBootScreen.markGameReady();
+      }
+    }
     requestFrame(tick);
   }
 
