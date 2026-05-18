@@ -35,32 +35,9 @@
   var FIRST_SPAWN_POPUP_MIN_LEVEL = 7;
   var FIRST_SPAWN_POPUP_MAX_LEVEL = 9;
   var GENERATION_SOUND_REPEAT_INTERVAL_MS = 400;
-  // 233乐园真实 IAA / IAP 开关：本地调试默认 false；正式包改成 true。
-  // 也可以在 index.html 的 game.js 之前提前设置：window.POLO_ENABLE_REAL_LEYUAN_SDK = true;
-  if (typeof globalScope.POLO_ENABLE_REAL_LEYUAN_SDK === "undefined") {
-    globalScope.POLO_ENABLE_REAL_LEYUAN_SDK = true;
-  }
-  // DEBUG 定位开关：开启后，广告 / 派对币续命每次通过或失败都会弹出可见诊断信息。
-  // 正式修复验证完成后，可在 game.js 之前设置 window.POLO_REVIVE_DEBUG_POPUP = false; 关闭。
-  if (typeof globalScope.POLO_REVIVE_DEBUG_POPUP === "undefined") {
-    globalScope.POLO_REVIVE_DEBUG_POPUP = true;
-  }
-  var LEYUAN_APP_KEY = "d77c1cd0375146fca7060217d710a017";
-  var LEYUAN_CP_ID = "169040";
-  var REVIVE_IAP_PRODUCT = {
-    productCode: "poloball_revive_100_party_coin",
-    productName: "100派对币继续游戏",
-    price: 100,
-    cpExtra: "revive_continue"
-  };
-  var PAY_RESULT_CODE_SUCCESS = 0;
-  var PAY_RESULT_CODE_FAILED = 8;
-  var PAY_RESULT_CODE_CANCEL = 10;
   var REWARD_VIDEO_AD_TYPE = 1;
   var REWARD_VIDEO_STATUS_REWARDED = 4;
-  // IAA DEBUG：showAd 可能先回 status=0/3，再回 status=4。定位版先收集一段时间的完整回调。
-  var IAA_DEBUG_WAIT_REWARD_MS = 12000;
-  var SDK_TIMEOUT_MS = 10000;
+  var REWARD_AD_TIMEOUT_MS = 120000;
 
   var LEVELS = [
     { id: "mouse", name: "Hello", radius: 20, score: 10, color: "#9a7454", image: "minigame/assets/skins/Char_Default_01.png", weight: 34, restitution: 0.16 },
@@ -203,17 +180,10 @@
   var lastPowerupMessage = "";
   var lastPowerupMessageMs = 0;
   var settlementRestartButton = { x: 132, y: 662, w: 186, h: 42 };
-  var settlementAdContinueButton = { x: 62, y: 598, w: 156, h: 54 };
-  var settlementIapContinueButton = { x: 232, y: 598, w: 156, h: 54 };
+  var settlementAdContinueButton = { x: 94, y: 598, w: 262, h: 54 };
   var revivePurchaseBusy = false;
   var revivePurchaseType = "";
   var reviveStatusText = "";
-  var reviveDebugPopup = null;
-  var reviveDebugPopupCloseButton = { x: 148, y: 636, w: 154, h: 46 };
-  var iapInitPromise = null;
-  var iapLoginPromise = null;
-  var iapInitialized = false;
-  var iapUserInfo = null;
   var pauseButton = { x: 344, y: 88, w: 42, h: 42 };
   var soundButton = { x: 398, y: 88, w: 42, h: 42 };
   var homeStartButton = { x: 70, y: 548, w: 310, h: 58 };
@@ -661,348 +631,48 @@
     return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h;
   }
 
-  function isTruthyRuntimeFlag(value) {
-    if (value === true) {
-      return true;
+  function toNumber(value) {
+    if (value === null || typeof value === "undefined" || value === "") {
+      return null;
     }
-    var text = String(value == null ? "" : value).toLowerCase();
-    return text === "1" || text === "true" || text === "on" || text === "yes" || text === "prod" || text === "production";
-  }
-
-  function isRealLeyuanSdkEnabled() {
-    return isTruthyRuntimeFlag(globalScope.POLO_ENABLE_REAL_LEYUAN_SDK);
-  }
-
-  function isReviveDebugPopupEnabled() {
-    return isTruthyRuntimeFlag(globalScope.POLO_REVIVE_DEBUG_POPUP);
-  }
-
-  function clipText(text, maxLength) {
-    var value = String(text == null ? "" : text);
-    if (!maxLength || value.length <= maxLength) {
-      return value;
-    }
-    return value.slice(0, maxLength - 1) + "…";
-  }
-
-  function safeStringify(value, maxLength) {
-    try {
-      return clipText(JSON.stringify(value), maxLength || 220);
-    } catch (error) {
-      return clipText(String(value), maxLength || 220);
-    }
-  }
-
-  function getIaaStatusName(status) {
-    switch (Number(status)) {
-      case -1:
-        return "FAILED/广告播放失败";
-      case 0:
-        return "SUCCESS/广告播放成功，但不是奖励";
-      case 1:
-        return "CLOSED/广告关闭";
-      case 2:
-        return "SKIPPED/广告跳过";
-      case 3:
-        return "CLICKED/广告点击，继续等待";
-      case 4:
-        return "REWARDED/获得激励奖励";
-      default:
-        return "UNKNOWN/未知状态";
-    }
-  }
-
-  function pushChunkedDebugLine(lines, prefix, text, chunkLength, maxChunks) {
-    var value = String(text == null ? "" : text);
-    var size = chunkLength || 46;
-    var chunks = Math.max(1, Math.ceil(value.length / size));
-    var limit = maxChunks && maxChunks > 0 ? Math.min(chunks, maxChunks) : chunks;
-    for (var i = 0; i < limit; i += 1) {
-      var head = i === 0 ? prefix : "  ";
-      lines.push(head + value.slice(i * size, (i + 1) * size));
-    }
-    if (chunks > limit) {
-      lines.push("  …已截断，完整内容看控制台变量 POLO_LAST_IAA_DEBUG");
-    }
-  }
-
-  function normalizeIaaCallback(result, elapsedMs, index) {
-    var data = result && result.data ? result.data : null;
-    var status = data && typeof data.status !== "undefined" ? Number(data.status) : -1;
-    var code = result && typeof result.code !== "undefined" ? Number(result.code) : -9999;
-    return {
-      index: index,
-      elapsedMs: elapsedMs,
-      adType: result && typeof result.adType !== "undefined" ? result.adType : "",
-      code: code,
-      message: result && typeof result.message !== "undefined" ? String(result.message) : "",
-      dataType: data && typeof data.type !== "undefined" ? data.type : "",
-      status: status,
-      statusName: getIaaStatusName(status),
-      raw: result,
-      rawText: safeStringify(result, 1600)
-    };
-  }
-
-  function exposeIaaDebug(summary) {
-    try {
-      globalScope.POLO_LAST_IAA_DEBUG = summary;
-      globalScope.POLO_LAST_IAA_CALLBACKS = summary && summary.callbackRecords ? summary.callbackRecords : [];
-    } catch (error) {
-      return;
-    }
-  }
-
-  function getSdkApiState() {
-    var adApi = getMetaH5AdApi();
-    var iapApi = getH5MetaApi();
-    return {
-      metaH5Ad: !!adApi,
-      isAdSupport: !!(adApi && typeof adApi.isAdSupport === "function"),
-      showAd: !!(adApi && typeof adApi.showAd === "function"),
-      h5MetaApi: !!iapApi,
-      pay: !!(iapApi && typeof iapApi.pay === "function")
-    };
-  }
-
-  function buildReviveDebugLines(flowName, result, granted) {
-    result = result || {};
-    var support = result.support || {};
-    var sdkState = getSdkApiState();
-    var lines = [
-      "方式：" + flowName,
-      "结论：" + (granted ? "已放行，已进入续命卡牌页" : "未放行"),
-      "原因：" + (result.passReason || result.message || "未提供"),
-      "SDK开关 POLO_ENABLE_REAL_LEYUAN_SDK：" + String(isRealLeyuanSdkEnabled()),
-      "DEBUG弹窗 POLO_REVIVE_DEBUG_POPUP：" + String(isReviveDebugPopupEnabled()),
-      "API存在：MetaH5Ad=" + String(sdkState.metaH5Ad) + " / isAdSupport=" + String(sdkState.isAdSupport) + " / showAd=" + String(sdkState.showAd) + " / H5MetaApi=" + String(sdkState.h5MetaApi)
-    ];
-    if (typeof support.supported !== "undefined") {
-      lines.push("广告支持检测：supported=" + String(support.supported) + " / reason=" + (support.reason || "") + " / 耗时=" + (support.elapsedMs || 0) + "ms");
-    }
-    if (typeof result.status !== "undefined") {
-      lines.push("showAd最终状态：status=" + String(result.status) + " / " + getIaaStatusName(result.status) + " / code=" + String(result.code) + " / 耗时=" + (result.elapsedMs || 0) + "ms");
-    }
-    if (typeof result.callbackCount !== "undefined") {
-      lines.push("IAA回调数量：" + result.callbackCount + " / 等待奖励=" + (result.waitedForRewardMs || 0) + "ms / 终态=" + (result.terminalReason || ""));
-      lines.push("控制台变量：POLO_LAST_IAA_DEBUG / POLO_LAST_IAA_CALLBACKS");
-    }
-    if (result.suspectFastReward) {
-      lines.push("警告：showAd 在 3 秒内返回奖励，疑似 SDK 秒回 status=4。");
-    }
-    if (result.simulated) {
-      lines.push("警告：本次是 simulated=true，说明走了调试模拟放行。");
-    }
-    if (result.result) {
-      lines.push("支付结果：data=" + String(result.result.data) + " / code=" + String(result.result.code) + " / msg=" + (result.result.msg || ""));
-    }
-    if (support.raw) {
-      pushChunkedDebugLine(lines, "isAdSupport原始=", safeStringify(support.raw, 600), 48, 4);
-    }
-    if (result.callbackRecords && result.callbackRecords.length) {
-      for (var i = 0; i < result.callbackRecords.length && i < 5; i += 1) {
-        var record = result.callbackRecords[i];
-        lines.push("IAA回调#" + record.index + "：t=" + record.elapsedMs + "ms code=" + record.code + " status=" + record.status + " " + record.statusName);
-        pushChunkedDebugLine(lines, "  raw=", record.rawText, 48, 6);
-      }
-      if (result.callbackRecords.length > 5) {
-        lines.push("IAA回调剩余 " + (result.callbackRecords.length - 5) + " 条，完整内容看控制台变量。");
-      }
-    } else if (result.raw) {
-      pushChunkedDebugLine(lines, "showAd/pay原始=", safeStringify(result.raw, 900), 48, 8);
-    }
-    return lines;
-  }
-
-  function showReviveDebugPopup(flowName, result, granted) {
-    var lines = buildReviveDebugLines(flowName, result, granted);
-    try {
-      globalScope.POLO_LAST_REVIVE_DEBUG = {
-        flowName: flowName,
-        granted: granted,
-        result: result || {},
-        lines: lines,
-        createdAt: Date.now()
-      };
-    } catch (error) {
-      // ignore debug expose error
-    }
-    if (!isReviveDebugPopupEnabled()) {
-      console.log("[REVIVE_DEBUG] " + flowName + " granted=" + granted, result || {}, lines);
-      return;
-    }
-    reviveDebugPopup = {
-      title: granted ? "续命通过 DEBUG" : "续命失败 DEBUG",
-      lines: lines,
-      createdAt: Date.now()
-    };
-    console.log("[REVIVE_DEBUG] " + flowName + " granted=" + granted, result || {}, lines);
+    var n = Number(value);
+    return Number.isFinite(n) ? n : null;
   }
 
   function getMetaH5AdApi() {
     return globalScope && globalScope.MetaH5Ad ? globalScope.MetaH5Ad : null;
   }
 
-  function getH5MetaApi() {
-    return globalScope && globalScope.H5MetaApi ? globalScope.H5MetaApi : null;
-  }
-
-  function withSdkTimeout(promise, timeoutMs, message) {
-    if (!timeoutMs || timeoutMs <= 0) {
-      return promise;
-    }
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      var timer = setTimeout(function () {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        reject(new Error(message || "SDK 请求超时"));
-      }, timeoutMs);
-      promise.then(function (value) {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      }).catch(function (error) {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
-    });
-  }
-
-  function callH5MetaApi(method, args, timeoutMs, timeoutMessage) {
-    var promise = new Promise(function (resolve, reject) {
-      var api = getH5MetaApi();
-      if (!api || typeof api[method] !== "function") {
-        reject(new Error("当前环境不支持派对币支付"));
-        return;
+  function installMetaH5AdLogFallback() {
+    var names = ["logBlue", "logGreen", "logRed", "logYellow"];
+    for (var i = 0; i < names.length; i += 1) {
+      var name = names[i];
+      if (typeof globalScope[name] !== "function") {
+        globalScope[name] = function () {};
       }
-      try {
-        var result = api[method].apply(api, args || []);
-        if (result && typeof result.then === "function") {
-          result.then(resolve).catch(reject);
-        } else {
-          resolve(result);
-        }
-      } catch (error) {
-        reject(error);
-      }
-    });
-    return withSdkTimeout(promise, timeoutMs, timeoutMessage);
+    }
   }
 
-  function ensureLeyuanIapInitialized() {
-    if (iapInitialized) {
-      return Promise.resolve();
-    }
-    if (iapInitPromise) {
-      return iapInitPromise;
-    }
-    iapInitPromise = callH5MetaApi("init", [LEYUAN_APP_KEY, LEYUAN_CP_ID], SDK_TIMEOUT_MS, "派对币支付初始化超时")
-      .then(function () {
-        iapInitialized = true;
-        iapInitPromise = null;
-      }).catch(function (error) {
-        iapInitialized = false;
-        iapInitPromise = null;
-        throw error;
-      });
-    return iapInitPromise;
-  }
-
-  function ensureLeyuanIapLoggedIn() {
-    if (iapUserInfo) {
-      return Promise.resolve(iapUserInfo);
-    }
-    if (iapLoginPromise) {
-      return iapLoginPromise;
-    }
-    iapLoginPromise = ensureLeyuanIapInitialized().then(function () {
-      return callH5MetaApi("login", [], SDK_TIMEOUT_MS, "派对币支付登录超时");
-    }).then(function (rawData) {
-      iapUserInfo = rawData && rawData.data ? rawData.data : rawData || {};
-      iapLoginPromise = null;
-      return iapUserInfo;
-    }).catch(function (error) {
-      iapLoginPromise = null;
-      throw error;
-    });
-    return iapLoginPromise;
-  }
-
-  function generateIapOrderId() {
-    return "revive_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
-  }
-
-  function normalizePayResult(rawData) {
-    if (typeof rawData === "number") {
-      return { code: 200, msg: "", data: rawData };
-    }
+  function normalizeRewardAdResult(result) {
+    var data = result && typeof result.data !== "undefined" ? result.data : null;
+    var dataIsObject = data && typeof data === "object";
+    var rawStatus = dataIsObject
+      ? data.status != null ? data.status : data.rewardStatus != null ? data.rewardStatus : data.state
+      : data != null ? data : result && result.status != null ? result.status : result && result.rewardStatus != null ? result.rewardStatus : result && result.state;
+    var status = toNumber(rawStatus);
+    var code = toNumber(result && result.code != null ? result.code : result && result.errCode);
+    var message = String(result && result.message ? result.message : dataIsObject && data.message ? data.message : "");
+    var explicitRewardFlag = Boolean(
+      result && (result.rewarded === true || result.reward === true || result.completed === true) ||
+      dataIsObject && (data.rewarded === true || data.reward === true || data.completed === true)
+    );
     return {
-      code: rawData && rawData.code != null ? Number(rawData.code) : 0,
-      msg: rawData && rawData.msg ? String(rawData.msg) : "",
-      data: rawData && rawData.data != null ? Number(rawData.data) : PAY_RESULT_CODE_FAILED
+      code: code,
+      status: status,
+      message: message,
+      isApiFailed: code !== null && code !== 0,
+      isRewarded: status === REWARD_VIDEO_STATUS_REWARDED || explicitRewardFlag
     };
-  }
-
-  function requestIapRevivePayment() {
-    if (!isRealLeyuanSdkEnabled()) {
-      console.log("[IAP] 调试模式，跳过派对币真实支付。把 POLO_ENABLE_REAL_LEYUAN_SDK 改成 true 后才会拉起 233 乐园 IAP。");
-      return Promise.resolve({
-        success: true,
-        simulated: true,
-        passReason: "POLO_ENABLE_REAL_LEYUAN_SDK=false，走调试模拟支付成功"
-      });
-    }
-    var payStartedAt = Date.now();
-    return ensureLeyuanIapLoggedIn().then(function () {
-      return callH5MetaApi("pay", [{
-        cpOrderId: generateIapOrderId(),
-        productCode: REVIVE_IAP_PRODUCT.productCode,
-        productName: REVIVE_IAP_PRODUCT.productName,
-        price: REVIVE_IAP_PRODUCT.price,
-        cpExtra: REVIVE_IAP_PRODUCT.cpExtra
-      }], 0, "");
-    }).then(function (rawData) {
-      var result = normalizePayResult(rawData);
-      var elapsedMs = Date.now() - payStartedAt;
-      if (result.data === PAY_RESULT_CODE_SUCCESS) {
-        return {
-          success: true,
-          result: result,
-          raw: rawData,
-          elapsedMs: elapsedMs,
-          passReason: "H5MetaApi.pay 返回 data=0，判定派对币支付成功"
-        };
-      }
-      if (result.data === PAY_RESULT_CODE_CANCEL) {
-        return {
-          success: false,
-          cancelled: true,
-          result: result,
-          raw: rawData,
-          elapsedMs: elapsedMs,
-          passReason: "H5MetaApi.pay 返回 data=10，用户取消支付",
-          message: "已取消派对币支付"
-        };
-      }
-      return {
-        success: false,
-        result: result,
-        raw: rawData,
-        elapsedMs: elapsedMs,
-        passReason: "H5MetaApi.pay 未返回支付成功状态",
-        message: result.msg ? "派对币支付失败：" + result.msg : "派对币支付失败，请重试"
-      };
-    });
   }
 
   function checkRewardAdSupport() {
@@ -1057,141 +727,123 @@
   }
 
   function showRewardAd(supportInfo) {
+    installMetaH5AdLogFallback();
     var adApi = getMetaH5AdApi();
     if (!adApi || typeof adApi.showAd !== "function") {
-      return Promise.reject(new Error("当前环境不支持广告继续"));
+      return Promise.resolve({
+        success: false,
+        support: supportInfo,
+        status: null,
+        reason: "sdk_missing",
+        message: "当前环境不支持广告继续"
+      });
     }
-    return new Promise(function (resolve, reject) {
+
+    return new Promise(function (resolve) {
       var startedAt = Date.now();
       var settled = false;
-      var callbackRecords = [];
-      var waitTimer = null;
+      var lastRaw = null;
+      var lastStatus = null;
 
       function finish(payload) {
         if (settled) {
           return;
         }
         settled = true;
-        if (waitTimer) {
-          clearTimeout(waitTimer);
-          waitTimer = null;
-        }
-        payload.callbackCount = callbackRecords.length;
-        payload.callbackRecords = callbackRecords.slice();
-        payload.waitedForRewardMs = Date.now() - startedAt;
-        exposeIaaDebug(payload);
+        clearTimeout(timer);
+        payload.support = supportInfo;
+        payload.elapsedMs = Date.now() - startedAt;
         resolve(payload);
       }
 
-      function scheduleRewardWait(lastRecord) {
-        if (waitTimer) {
-          return;
-        }
-        waitTimer = setTimeout(function () {
-          finish({
-            success: false,
-            support: supportInfo,
-            raw: lastRecord ? lastRecord.raw : null,
-            code: lastRecord ? lastRecord.code : "NO_CALLBACK",
-            status: lastRecord ? lastRecord.status : -1,
-            elapsedMs: lastRecord ? lastRecord.elapsedMs : Date.now() - startedAt,
-            terminalReason: "等待 " + IAA_DEBUG_WAIT_REWARD_MS + "ms 后仍未收到 status=4",
-            passReason: "MetaH5Ad.showAd 已回调，但没有收到 status=4 奖励回调",
-            message: "看完广告才能继续游戏"
-          });
-        }, IAA_DEBUG_WAIT_REWARD_MS);
-      }
+      var timer = setTimeout(function () {
+        finish({
+          success: false,
+          raw: lastRaw,
+          status: lastStatus,
+          reason: "timeout",
+          message: "广告确认超时，请稍后重试"
+        });
+      }, REWARD_AD_TIMEOUT_MS);
 
       try {
-        console.log("[IAA_DEBUG] showAd 调用开始 adType=", REWARD_VIDEO_AD_TYPE, "startedAt=", startedAt);
         adApi.showAd(REWARD_VIDEO_AD_TYPE, function (result) {
-          var elapsedMs = Date.now() - startedAt;
-          var record = normalizeIaaCallback(result, elapsedMs, callbackRecords.length + 1);
-          callbackRecords.push(record);
-          exposeIaaDebug({
-            success: false,
-            support: supportInfo,
-            raw: result,
-            code: record.code,
-            status: record.status,
-            elapsedMs: elapsedMs,
-            terminalReason: "showAd 回调收集中",
-            callbackCount: callbackRecords.length,
-            callbackRecords: callbackRecords.slice(),
-            waitedForRewardMs: elapsedMs
-          });
-          console.log("[IAA_DEBUG] showAd callback #" + record.index, record);
+          if (settled) {
+            return;
+          }
+          lastRaw = result;
+          var normalized = normalizeRewardAdResult(result);
+          lastStatus = normalized.status;
 
-          if (!result || record.code !== 0) {
+          if (!result || normalized.isApiFailed) {
             finish({
               success: false,
-              support: supportInfo,
               raw: result,
-              code: result && typeof result.code !== "undefined" ? result.code : "NO_RESULT",
-              status: record.status,
-              elapsedMs: elapsedMs,
-              terminalReason: "showAd 返回失败或空结果",
-              passReason: "MetaH5Ad.showAd 返回失败或空结果",
+              code: normalized.code,
+              status: normalized.status,
+              reason: "failed",
               message: "广告播放失败，请稍后重试"
             });
             return;
           }
 
-          if (record.status === REWARD_VIDEO_STATUS_REWARDED) {
+          if (normalized.isRewarded) {
             finish({
               success: true,
-              support: supportInfo,
               raw: result,
-              code: record.code,
-              status: record.status,
-              elapsedMs: elapsedMs,
-              suspectFastReward: elapsedMs < 3000,
-              terminalReason: "收到 status=4 奖励回调",
-              passReason: "MetaH5Ad.showAd 返回 status=4，判定获得激励奖励"
+              code: normalized.code,
+              status: REWARD_VIDEO_STATUS_REWARDED,
+              reason: "rewarded"
             });
             return;
           }
 
-          if (record.status === 1 || record.status === 2 || record.status === -1) {
+          if (normalized.status === 0 || normalized.status === 3 || normalized.status === null) {
+            return;
+          }
+
+          if (normalized.status === 1 || normalized.status === 2) {
             finish({
               success: false,
-              support: supportInfo,
               raw: result,
-              code: record.code,
-              status: record.status,
-              elapsedMs: elapsedMs,
-              terminalReason: "收到明确失败/关闭/跳过状态",
-              passReason: "MetaH5Ad.showAd 返回 " + record.statusName,
-              message: record.status === 1 || record.status === 2 ? "看完广告才能继续游戏" : "广告播放失败，请稍后重试"
+              code: normalized.code,
+              status: normalized.status,
+              reason: normalized.status === 1 ? "closed" : "skipped",
+              message: "看完广告才能继续游戏"
             });
             return;
           }
 
-          // 定位版：status=0/3 先不立刻失败，继续等待是否还会回调 status=4。这样可以看清 IAA 是否多次回调。
-          scheduleRewardWait(record);
+          if (normalized.status === -1) {
+            finish({
+              success: false,
+              raw: result,
+              code: normalized.code,
+              status: normalized.status,
+              reason: "failed",
+              message: "广告播放失败，请稍后重试"
+            });
+          }
         });
       } catch (error) {
-        reject(error);
+        finish({
+          success: false,
+          raw: error,
+          status: lastStatus,
+          reason: "exception",
+          message: error && error.message ? error.message : "广告播放失败，请稍后重试"
+        });
       }
     });
   }
 
   function requestAdReviveReward() {
-    if (!isRealLeyuanSdkEnabled()) {
-      console.log("[IAA] 调试模式，跳过激励视频真实播放。把 POLO_ENABLE_REAL_LEYUAN_SDK 改成 true 后才会拉起 233 乐园 IAA。");
-      return Promise.resolve({
-        success: true,
-        simulated: true,
-        passReason: "POLO_ENABLE_REAL_LEYUAN_SDK=false，走调试模拟广告成功"
-      });
-    }
     return checkRewardAdSupport().then(function (supportInfo) {
-      console.log("[IAA] isAdSupport result:", supportInfo);
       if (!supportInfo.supported) {
         return {
           success: false,
           support: supportInfo,
-          passReason: "广告支持检测失败",
+          reason: "unsupported",
           message: "当前环境不支持广告继续"
         };
       }
@@ -1210,12 +862,11 @@
     playUiSound();
   }
 
-  function grantReviveAccess(debugResult, flowName) {
+  function grantReviveAccess() {
     clearRevivePurchaseState();
     reviveStatusText = "";
     if (mode === "gameOver") {
       showReviveCards();
-      showReviveDebugPopup(flowName || "续命", debugResult, true);
     }
   }
 
@@ -1225,7 +876,7 @@
     }
     revivePurchaseBusy = true;
     revivePurchaseType = "ad";
-    reviveStatusText = isRealLeyuanSdkEnabled() ? "正在拉起广告..." : "调试模式：跳过广告继续";
+    reviveStatusText = "正在拉起广告...";
     playUiSound();
     requestAdReviveReward().then(function (result) {
       if (mode !== "gameOver") {
@@ -1233,56 +884,13 @@
         return;
       }
       if (result && result.success) {
-        grantReviveAccess(result, "广告续命");
+        grantReviveAccess();
       } else {
         failRevivePurchase(result && result.message ? result.message : "看完广告才能继续游戏");
-        showReviveDebugPopup("广告续命", result, false);
       }
     }).catch(function (error) {
       if (mode === "gameOver") {
-        var debugResult = {
-          success: false,
-          passReason: "广告续命 Promise 异常",
-          message: error && error.message ? error.message : "广告播放失败，请稍后重试",
-          raw: error && error.stack ? error.stack : error
-        };
-        failRevivePurchase(debugResult.message);
-        showReviveDebugPopup("广告续命", debugResult, false);
-      } else {
-        clearRevivePurchaseState();
-      }
-    });
-  }
-
-  function startIapReviveFlow() {
-    if (revivePurchaseBusy) {
-      return;
-    }
-    revivePurchaseBusy = true;
-    revivePurchaseType = "iap";
-    reviveStatusText = isRealLeyuanSdkEnabled() ? "正在拉起派对币支付..." : "调试模式：跳过支付继续";
-    playUiSound();
-    requestIapRevivePayment().then(function (result) {
-      if (mode !== "gameOver") {
-        clearRevivePurchaseState();
-        return;
-      }
-      if (result && result.success) {
-        grantReviveAccess(result, "派对币续命");
-      } else {
-        failRevivePurchase(result && result.message ? result.message : "派对币支付失败，请重试");
-        showReviveDebugPopup("派对币续命", result, false);
-      }
-    }).catch(function (error) {
-      if (mode === "gameOver") {
-        var debugResult = {
-          success: false,
-          passReason: "派对币续命 Promise 异常",
-          message: error && error.message ? error.message : "派对币支付异常，请稍后重试",
-          raw: error && error.stack ? error.stack : error
-        };
-        failRevivePurchase(debugResult.message);
-        showReviveDebugPopup("派对币续命", debugResult, false);
+        failRevivePurchase(error && error.message ? error.message : "广告播放失败，请稍后重试");
       } else {
         clearRevivePurchaseState();
       }
@@ -1947,8 +1555,6 @@
     } else if (mode === "paused") {
       drawOverlay("已暂停", "点击任意位置继续");
     }
-
-    drawReviveDebugPopup();
   }
 
   function drawHomeScreen() {
@@ -2432,23 +2038,13 @@
   }
 
   function drawSettlementContinueButtons() {
-    var adText = revivePurchaseBusy && revivePurchaseType === "ad" ? "广告拉起中" : "看广告继续";
-    var iapText = revivePurchaseBusy && revivePurchaseType === "iap" ? "支付拉起中" : "100派对币继续";
-    var adDisabled = revivePurchaseBusy && revivePurchaseType !== "ad";
-    var iapDisabled = revivePurchaseBusy && revivePurchaseType !== "iap";
+    var adText = revivePurchaseBusy ? "广告确认中" : "看广告继续";
     drawGameButton(
       settlementAdContinueButton,
       adText,
-      adDisabled ? "#5c5c6f" : "#ff3d00",
-      adDisabled ? "#8a8a9a" : "#ffe500",
-      16
-    );
-    drawGameButton(
-      settlementIapContinueButton,
-      iapText,
-      iapDisabled ? "#5c5c6f" : "#7a19e8",
-      iapDisabled ? "#8a8a9a" : "#23f7ff",
-      15
+      revivePurchaseBusy ? "#5c5c6f" : "#ff3d00",
+      revivePurchaseBusy ? "#8a8a9a" : "#ffe500",
+      19
     );
   }
 
@@ -2500,7 +2096,7 @@
 
     drawTextStroke("已超越 " + getOvertakePercent() + "% 玩梗玩家", STAGE_WIDTH / 2, panelY + 426, "900 17px sans-serif", "#fff23b", "#111111", 3, "center");
 
-    var statusText = reviveStatusText || "选择一种方式继续游戏";
+    var statusText = reviveStatusText || "看广告继续游戏";
     drawTextStroke(statusText, STAGE_WIDTH / 2, panelY + 454, "900 14px sans-serif", reviveStatusText ? "#23f7ff" : "#ffffff", "#111111", 3, "center");
 
     drawSettlementContinueButtons();
@@ -2717,38 +2313,6 @@
     context.restore();
   }
 
-  function drawReviveDebugPopup() {
-    if (!reviveDebugPopup) {
-      return;
-    }
-    context.save();
-    context.fillStyle = "rgba(0, 0, 0, 0.62)";
-    context.fillRect(0, 0, STAGE_WIDTH, STAGE_HEIGHT);
-    drawPanel(22, 44, STAGE_WIDTH - 44, 652, 22, "#121222", "#111111", 8);
-    fillRoundRect(44, 64, STAGE_WIDTH - 88, 38, 15, "#ff3d00");
-    strokeOnlyRoundRect(44, 64, STAGE_WIDTH - 88, 38, 15, "#111111", 4);
-    drawTextStroke(reviveDebugPopup.title, STAGE_WIDTH / 2, 90, "900 23px sans-serif", "#ffffff", "#111111", 4, "center");
-
-    context.font = "700 10.5px sans-serif";
-    context.fillStyle = "#ffffff";
-    context.textAlign = "left";
-    var y = 124;
-    var maxLines = 34;
-    for (var i = 0; i < reviveDebugPopup.lines.length && i < maxLines; i += 1) {
-      var line = clipText(reviveDebugPopup.lines[i], 58);
-      context.fillStyle = i === 2 ? "#fff23b" : i >= 6 ? "rgba(255,255,255,0.80)" : "#ffffff";
-      context.fillText(line, 38, y);
-      y += 15;
-    }
-    if (reviveDebugPopup.lines.length > maxLines) {
-      context.fillStyle = "rgba(255,255,255,0.72)";
-      context.fillText("还有 " + (reviveDebugPopup.lines.length - maxLines) + " 行，完整内容看控制台变量 POLO_LAST_IAA_DEBUG", 38, y);
-    }
-
-    drawGameButton(reviveDebugPopupCloseButton, "关闭 DEBUG", "#0087ff", "#37f5ff", 16);
-    context.restore();
-  }
-
   function roundRect(x, y, width, height, radius) {
     context.beginPath();
     context.moveTo(x + radius, y);
@@ -2763,13 +2327,6 @@
   function onTouchStart(x, y) {
     unlockAudio();
     var point = { x: stageXFromScreen(x), y: stageYFromScreen(y) };
-    if (reviveDebugPopup) {
-      if (hitRect(point, reviveDebugPopupCloseButton)) {
-        reviveDebugPopup = null;
-        playUiSound();
-      }
-      return;
-    }
     if (mode === "home") {
       if (hitRect(point, homeStartButton)) {
         resetGame();
@@ -2785,10 +2342,6 @@
       }
       if (hitRect(point, settlementAdContinueButton)) {
         startAdReviveFlow();
-        return;
-      }
-      if (hitRect(point, settlementIapContinueButton)) {
-        startIapReviveFlow();
         return;
       }
       return;
@@ -2937,19 +2490,13 @@
   globalScope.render_game_to_text = function () {
     return JSON.stringify({
       runtime: ttApi ? "douyin-minigame" : "browser-fallback",
-      leyuanSdkEnabled: isRealLeyuanSdkEnabled(),
       mode: mode,
       reviveContinue: {
         busy: revivePurchaseBusy,
         type: revivePurchaseType,
         statusText: reviveStatusText,
         adButton: settlementAdContinueButton,
-        iapButton: settlementIapContinueButton,
-        sdkSwitchName: "POLO_ENABLE_REAL_LEYUAN_SDK",
-        debugPopupEnabled: isReviveDebugPopupEnabled(),
-        debugPopup: reviveDebugPopup,
-        sdkApiState: getSdkApiState(),
-        iapProduct: REVIVE_IAP_PRODUCT
+        adSdkReady: !!getMetaH5AdApi()
       },
       score: score,
       highScore: highScore,
