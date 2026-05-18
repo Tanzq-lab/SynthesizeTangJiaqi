@@ -1309,6 +1309,11 @@
     return 0;
   }
 
+  // debug
+  // function pickSpawnLevel() {
+  //   return LEVELS.length - 1;
+  // }
+
   function hasCoinOfLevel(level) {
     for (var i = 0; i < coins.length; i += 1) {
       if (coins[i].level === level) {
