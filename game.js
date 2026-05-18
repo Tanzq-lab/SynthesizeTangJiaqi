@@ -38,6 +38,12 @@
   var REWARD_VIDEO_AD_TYPE = 1;
   var REWARD_VIDEO_STATUS_REWARDED = 4;
   var REWARD_AD_TIMEOUT_MS = 120000;
+  var LEADERBOARD_URL = "https://poloball-analytics-d1cgr97b043f9-1431279216.ap-shanghai.app.tcloudbase.com/game/leaderboard";
+  var LEADERBOARD_CHANNEL = "SynthesizeTangJiaqi";
+  var LEADERBOARD_TOP_LIMIT = 50;
+  var LEADERBOARD_PLAYER_ID_KEY = "synthesize-tangjiaqi-leaderboard-player-id";
+  var LEADERBOARD_NICKNAME_KEY = "synthesize-tangjiaqi-leaderboard-nickname";
+  var LEADERBOARD_SUBMITTED_SCORE_KEY = "synthesize-tangjiaqi-leaderboard-submitted-score";
 
   var LEVELS = [
     { id: "mouse", name: "Hello", radius: 20, score: 10, color: "#9a7454", image: "minigame/assets/skins/Char_Default_01.png", weight: 34, restitution: 0.16 },
@@ -181,9 +187,30 @@
   var lastPowerupMessageMs = 0;
   var settlementRestartButton = { x: 132, y: 662, w: 186, h: 42 };
   var settlementAdContinueButton = { x: 94, y: 598, w: 262, h: 54 };
+  var settlementLeaderboardButton = { x: 70, y: 662, w: 145, h: 42 };
+  settlementRestartButton = { x: 235, y: 662, w: 145, h: 42 };
   var revivePurchaseBusy = false;
   var revivePurchaseType = "";
   var reviveStatusText = "";
+  var leaderboardCloseButton = { x: 386, y: 58, w: 38, h: 38 };
+  var leaderboardRefreshButton = { x: 42, y: 604, w: 160, h: 46 };
+  var leaderboardBackButton = { x: 238, y: 604, w: 160, h: 46 };
+  var leaderboardListRect = { x: 44, y: 154, w: 362, h: 418 };
+  var leaderboardRowHeight = 34;
+  var leaderboardState = {
+    status: "idle",
+    message: "",
+    errorText: "",
+    list: [],
+    scrollY: 0,
+    lastLoadedAt: 0
+  };
+  var leaderboardDrag = {
+    active: false,
+    lastY: 0
+  };
+  var leaderboardLastSubmittedScore = readNumberStorage(LEADERBOARD_SUBMITTED_SCORE_KEY, 0);
+  var leaderboardSubmitPromise = null;
   var pauseButton = { x: 344, y: 88, w: 42, h: 42 };
   var soundButton = { x: 398, y: 88, w: 42, h: 42 };
   var homeStartButton = { x: 70, y: 548, w: 310, h: 58 };
@@ -589,30 +616,43 @@
     stageOffsetY = (viewHeight - STAGE_HEIGHT * stageScale) / 2;
   }
 
-  function readHighScore() {
+  function readStorage(key) {
     try {
       if (ttApi && typeof ttApi.getStorageSync === "function") {
-        return Number(ttApi.getStorageSync("coin-fantasia-high-score")) || 0;
+        return ttApi.getStorageSync(key);
       }
       if (typeof localStorage !== "undefined") {
-        return Number(localStorage.getItem("coin-fantasia-high-score")) || 0;
+        return localStorage.getItem(key);
       }
     } catch (error) {
-      return 0;
+      return null;
     }
-    return 0;
+    return null;
   }
 
-  function writeHighScore(value) {
+  function writeStorage(key, value) {
     try {
       if (ttApi && typeof ttApi.setStorageSync === "function") {
-        ttApi.setStorageSync("coin-fantasia-high-score", String(value));
+        ttApi.setStorageSync(key, String(value));
       } else if (typeof localStorage !== "undefined") {
-        localStorage.setItem("coin-fantasia-high-score", String(value));
+        localStorage.setItem(key, String(value));
       }
     } catch (error) {
       return;
     }
+  }
+
+  function readNumberStorage(key, fallbackValue) {
+    var value = Number(readStorage(key));
+    return isFinite(value) ? value : fallbackValue;
+  }
+
+  function readHighScore() {
+    return readNumberStorage("coin-fantasia-high-score", 0);
+  }
+
+  function writeHighScore(value) {
+    writeStorage("coin-fantasia-high-score", value);
   }
 
   function clamp(value, min, max) {
@@ -895,6 +935,224 @@
         clearRevivePurchaseState();
       }
     });
+  }
+
+  function getOrCreateLeaderboardPlayerId() {
+    var playerId = String(readStorage(LEADERBOARD_PLAYER_ID_KEY) || "");
+    if (playerId) {
+      return playerId;
+    }
+    playerId = "guest_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+    writeStorage(LEADERBOARD_PLAYER_ID_KEY, playerId);
+    return playerId;
+  }
+
+  function getOrCreateLeaderboardNickname() {
+    var nickname = String(readStorage(LEADERBOARD_NICKNAME_KEY) || "");
+    if (nickname) {
+      return nickname;
+    }
+    nickname = "玩家" + String(Math.floor(1000 + Math.random() * 9000));
+    writeStorage(LEADERBOARD_NICKNAME_KEY, nickname);
+    return nickname;
+  }
+
+  function parseLeaderboardResponse(raw) {
+    if (typeof raw === "string") {
+      try {
+        return JSON.parse(raw);
+      } catch (error) {
+        return { code: -1, message: "排行榜返回格式异常" };
+      }
+    }
+    return raw || {};
+  }
+
+  function requestLeaderboardJson(method, url, payload) {
+    method = method || "GET";
+    if (typeof Promise === "undefined") {
+      return {
+        then: function (_, reject) {
+          if (reject) reject(new Error("当前环境不支持排行榜请求"));
+          return this;
+        },
+        catch: function (reject) {
+          if (reject) reject(new Error("当前环境不支持排行榜请求"));
+          return this;
+        }
+      };
+    }
+    if (ttApi && typeof ttApi.request === "function") {
+      return new Promise(function (resolve, reject) {
+        ttApi.request({
+          url: url,
+          method: method,
+          data: payload || undefined,
+          dataType: "json",
+          header: {
+            "Content-Type": "application/json; charset=utf-8"
+          },
+          success: function (res) {
+            var statusCode = Number(res && res.statusCode) || 0;
+            if (statusCode >= 400) {
+              reject(new Error("排行榜请求失败：" + statusCode));
+              return;
+            }
+            resolve(parseLeaderboardResponse(res && res.data));
+          },
+          fail: function (error) {
+            reject(new Error(error && error.errMsg ? error.errMsg : "排行榜网络异常"));
+          }
+        });
+      });
+    }
+    if (typeof fetch === "function") {
+      var options = {
+        method: method,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8"
+        }
+      };
+      if (payload && method !== "GET") {
+        options.body = JSON.stringify(payload);
+      }
+      return fetch(url, options).then(function (res) {
+        if (!res.ok) {
+          throw new Error("排行榜请求失败：" + res.status);
+        }
+        return res.text();
+      }).then(function (text) {
+        return parseLeaderboardResponse(text);
+      });
+    }
+    if (typeof XMLHttpRequest !== "undefined") {
+      return new Promise(function (resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open(method, url, true);
+        xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) return;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parseLeaderboardResponse(xhr.responseText));
+          } else {
+            reject(new Error("排行榜请求失败：" + xhr.status));
+          }
+        };
+        xhr.onerror = function () {
+          reject(new Error("排行榜网络异常"));
+        };
+        xhr.send(payload && method !== "GET" ? JSON.stringify(payload) : null);
+      });
+    }
+    return Promise.reject(new Error("当前环境不支持排行榜请求"));
+  }
+
+  function submitLeaderboardHighScoreIfNeeded(force) {
+    var submitScore = Math.max(0, Math.floor(Number(highScore) || 0));
+    if (submitScore <= 0) {
+      return Promise.resolve({ skipped: true, reason: "empty" });
+    }
+    if (!force && leaderboardLastSubmittedScore >= submitScore) {
+      return Promise.resolve({ skipped: true, reason: "submitted" });
+    }
+    if (leaderboardSubmitPromise) {
+      return leaderboardSubmitPromise;
+    }
+    var payload = {
+      action: "submitScore",
+      channel: LEADERBOARD_CHANNEL,
+      playerId: getOrCreateLeaderboardPlayerId(),
+      nickname: getOrCreateLeaderboardNickname(),
+      score: submitScore
+    };
+    leaderboardSubmitPromise = requestLeaderboardJson("POST", LEADERBOARD_URL, payload).then(function (json) {
+      if (Number(json && json.code) !== 0) {
+        throw new Error(json && json.message ? json.message : "最高分提交失败");
+      }
+      var data = json.data || {};
+      var cloudScore = Math.max(Number(data.highScore) || 0, Number(data.score) || 0, submitScore);
+      leaderboardLastSubmittedScore = Math.max(leaderboardLastSubmittedScore, cloudScore);
+      writeStorage(LEADERBOARD_SUBMITTED_SCORE_KEY, leaderboardLastSubmittedScore);
+      return json;
+    });
+    leaderboardSubmitPromise = leaderboardSubmitPromise.then(function (result) {
+      leaderboardSubmitPromise = null;
+      return result;
+    }, function (error) {
+      leaderboardSubmitPromise = null;
+      throw error;
+    });
+    return leaderboardSubmitPromise;
+  }
+
+  function buildLeaderboardTopUrl() {
+    return LEADERBOARD_URL +
+      "?action=getTop" +
+      "&channel=" + encodeURIComponent(LEADERBOARD_CHANNEL) +
+      "&limit=" + encodeURIComponent(LEADERBOARD_TOP_LIMIT);
+  }
+
+  function fetchLeaderboardTop() {
+    return requestLeaderboardJson("GET", buildLeaderboardTopUrl(), null).then(function (json) {
+      if (Number(json && json.code) !== 0) {
+        throw new Error(json && json.message ? json.message : "排行榜加载失败");
+      }
+      var list = json.data && json.data.list ? json.data.list : [];
+      return list.slice(0, LEADERBOARD_TOP_LIMIT).map(function (item, index) {
+        return {
+          rank: Number(item.rank) || index + 1,
+          nickname: String(item.nickname || "匿名玩家"),
+          score: Math.max(0, Math.floor(Number(item.score) || 0))
+        };
+      });
+    });
+  }
+
+  function getLeaderboardMaxScroll() {
+    var contentHeight = Math.max(0, leaderboardState.list.length * leaderboardRowHeight);
+    return Math.max(0, contentHeight - leaderboardListRect.h + 8);
+  }
+
+  function clampLeaderboardScroll() {
+    leaderboardState.scrollY = clamp(leaderboardState.scrollY, 0, getLeaderboardMaxScroll());
+  }
+
+  function loadLeaderboardTop(keepScroll) {
+    leaderboardState.status = "loading";
+    leaderboardState.message = "正在同步历史最高分...";
+    leaderboardState.errorText = "";
+    if (!keepScroll) {
+      leaderboardState.scrollY = 0;
+    }
+    submitLeaderboardHighScoreIfNeeded(false).catch(function () {
+      return null;
+    }).then(function () {
+      leaderboardState.message = "正在拉取 TOP50...";
+      return fetchLeaderboardTop();
+    }).then(function (list) {
+      leaderboardState.status = "loaded";
+      leaderboardState.message = "";
+      leaderboardState.list = list;
+      leaderboardState.lastLoadedAt = Date.now();
+      clampLeaderboardScroll();
+    }).catch(function (error) {
+      leaderboardState.status = "error";
+      leaderboardState.message = "";
+      leaderboardState.errorText = error && error.message ? error.message : "排行榜加载失败，请稍后重试";
+      leaderboardState.list = [];
+      leaderboardState.scrollY = 0;
+    });
+  }
+
+  function openLeaderboard() {
+    mode = "leaderboard";
+    leaderboardDrag.active = false;
+    loadLeaderboardTop(false);
+  }
+
+  function closeLeaderboard() {
+    leaderboardDrag.active = false;
+    mode = gameOverAt > 0 ? "gameOver" : "playing";
   }
 
   function setPointer(stageX) {
@@ -1275,6 +1533,9 @@
       gameOverSoundPlayed = true;
       playGameOverSound();
     }
+    submitLeaderboardHighScoreIfNeeded(false).catch(function () {
+      // 排行榜提交失败不影响结算页，玩家点击排行榜时还会再次尝试同步。
+    });
   }
 
   function getRunDurationMs() {
@@ -1548,6 +1809,8 @@
 
     if (mode === "gameOver") {
       drawSettlementOverlay();
+    } else if (mode === "leaderboard") {
+      drawLeaderboardOverlay();
     } else if (mode === "cardSelect") {
       drawCardSelectOverlay();
     } else if (mode === "targetingPowerup") {
@@ -2100,7 +2363,131 @@
     drawTextStroke(statusText, STAGE_WIDTH / 2, panelY + 454, "900 14px sans-serif", reviveStatusText ? "#23f7ff" : "#ffffff", "#111111", 3, "center");
 
     drawSettlementContinueButtons();
+    drawGameButton(settlementLeaderboardButton, "排行榜", "#8d20ff", "#ff4fd8", 17);
     drawGameButton(settlementRestartButton, "重新开始", "#0087ff", "#37f5ff", 18);
+    context.restore();
+  }
+
+  function truncateText(text, maxWidth) {
+    text = String(text || "");
+    if (context.measureText(text).width <= maxWidth) return text;
+    var suffix = "...";
+    while (text.length > 0 && context.measureText(text + suffix).width > maxWidth) {
+      text = text.slice(0, -1);
+    }
+    return text + suffix;
+  }
+
+  function drawLeaderboardRow(item, index, y) {
+    var isTopThree = item.rank <= 3;
+    var rowX = leaderboardListRect.x + 2;
+    var rowW = leaderboardListRect.w - 4;
+    fillRoundRect(rowX, y + 2, rowW, leaderboardRowHeight - 5, 10, index % 2 === 0 ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.045)");
+    if (isTopThree) {
+      fillRoundRect(rowX + 2, y + 4, 40, leaderboardRowHeight - 9, 10, item.rank === 1 ? "#ffe500" : item.rank === 2 ? "#23f7ff" : "#ff4fd8");
+      drawTextStroke(String(item.rank), rowX + 22, y + 24, "900 16px sans-serif", "#111111", null, 0, "center");
+    } else {
+      context.fillStyle = "rgba(255,255,255,0.66)";
+      context.font = "900 15px sans-serif";
+      context.textAlign = "center";
+      context.fillText(String(item.rank), rowX + 22, y + 24);
+    }
+
+    context.textAlign = "left";
+    context.font = "900 15px sans-serif";
+    context.fillStyle = isTopThree ? "#ffffff" : "rgba(255,255,255,0.9)";
+    context.fillText(truncateText(item.nickname, 138), rowX + 54, y + 24);
+
+    context.textAlign = "right";
+    context.font = "900 17px sans-serif";
+    context.fillStyle = isTopThree ? "#fff23b" : "#23f7ff";
+    context.fillText(String(item.score), rowX + rowW - 16, y + 24);
+  }
+
+  function drawLeaderboardList() {
+    var list = leaderboardState.list || [];
+    context.save();
+    fillRoundRect(leaderboardListRect.x, leaderboardListRect.y, leaderboardListRect.w, leaderboardListRect.h, 16, "rgba(7,7,15,0.72)");
+    strokeOnlyRoundRect(leaderboardListRect.x, leaderboardListRect.y, leaderboardListRect.w, leaderboardListRect.h, 16, "rgba(255,255,255,0.18)", 2);
+
+    context.save();
+    context.beginPath();
+    context.rect(leaderboardListRect.x, leaderboardListRect.y + 8, leaderboardListRect.w, leaderboardListRect.h - 16);
+    context.clip();
+    for (var i = 0; i < list.length; i += 1) {
+      var y = leaderboardListRect.y + 8 + i * leaderboardRowHeight - leaderboardState.scrollY;
+      if (y > leaderboardListRect.y + leaderboardListRect.h || y + leaderboardRowHeight < leaderboardListRect.y) continue;
+      drawLeaderboardRow(list[i], i, y);
+    }
+    context.restore();
+
+    if (!list.length && leaderboardState.status === "loaded") {
+      drawTextStroke("还没人上榜", STAGE_WIDTH / 2, leaderboardListRect.y + 172, "900 25px sans-serif", "#ffffff", "#111111", 4, "center");
+      context.fillStyle = "#fff23b";
+      context.font = "800 15px sans-serif";
+      context.textAlign = "center";
+      context.fillText("刷新历史最高后会自动提交", STAGE_WIDTH / 2, leaderboardListRect.y + 202);
+    }
+
+    var maxScroll = getLeaderboardMaxScroll();
+    if (maxScroll > 0) {
+      var barH = Math.max(42, leaderboardListRect.h * leaderboardListRect.h / (leaderboardListRect.h + maxScroll));
+      var barY = leaderboardListRect.y + 10 + (leaderboardListRect.h - 20 - barH) * (leaderboardState.scrollY / maxScroll);
+      fillRoundRect(leaderboardListRect.x + leaderboardListRect.w - 9, barY, 5, barH, 3, "rgba(255,242,59,0.72)");
+    }
+    context.restore();
+  }
+
+  function drawLeaderboardOverlay() {
+    context.save();
+    context.fillStyle = "rgba(5, 3, 18, 0.9)";
+    context.fillRect(0, 0, STAGE_WIDTH, STAGE_HEIGHT);
+    drawRadialGlow(72, 96, 0, 178, "rgba(255,79,216,0.18)", "rgba(255,79,216,0)");
+    drawRadialGlow(STAGE_WIDTH - 68, 620, 0, 188, "rgba(35,247,255,0.14)", "rgba(35,247,255,0)");
+
+    drawPanel(28, 42, STAGE_WIDTH - 56, 626, 26, "#151522", "#111111", 8);
+    fillRoundRect(54, 64, 232, 44, 16, "#ff3d00");
+    strokeOnlyRoundRect(54, 64, 232, 44, 16, "#111111", 4);
+    drawTextStroke("荣耀排行榜", 170, 94, "900 29px sans-serif", "#ffffff", "#111111", 5, "center");
+    drawSticker(284, 58, 64, 31, 11, "#ffe500", "TOP50", 15, 7);
+
+    drawIconButton(leaderboardCloseButton, "close", "×");
+
+    context.textAlign = "left";
+    context.font = "800 13px sans-serif";
+    context.fillStyle = "#fff23b";
+    context.fillText("按历史最高分排序，越早达到同分越靠前", 48, 132);
+    context.textAlign = "right";
+    context.fillStyle = "rgba(255,255,255,0.72)";
+    context.fillText("我的最高分 " + highScore, 402, 132);
+
+    drawLeaderboardList();
+
+    if (leaderboardState.status === "loading") {
+      context.fillStyle = "rgba(7,7,15,0.72)";
+      context.fillRect(leaderboardListRect.x, leaderboardListRect.y, leaderboardListRect.w, leaderboardListRect.h);
+      drawTextStroke("加载中...", STAGE_WIDTH / 2, leaderboardListRect.y + 178, "900 28px sans-serif", "#ffffff", "#111111", 5, "center");
+      context.fillStyle = "#23f7ff";
+      context.font = "800 15px sans-serif";
+      context.textAlign = "center";
+      context.fillText(leaderboardState.message || "正在拉取榜单", STAGE_WIDTH / 2, leaderboardListRect.y + 211);
+    } else if (leaderboardState.status === "error") {
+      context.fillStyle = "rgba(7,7,15,0.72)";
+      context.fillRect(leaderboardListRect.x, leaderboardListRect.y, leaderboardListRect.w, leaderboardListRect.h);
+      drawTextStroke("加载失败", STAGE_WIDTH / 2, leaderboardListRect.y + 166, "900 29px sans-serif", "#ffffff", "#111111", 5, "center");
+      context.fillStyle = "#ff6b6b";
+      context.font = "800 14px sans-serif";
+      context.textAlign = "center";
+      wrapText(leaderboardState.errorText || "请检查网络后重试", STAGE_WIDTH / 2, leaderboardListRect.y + 202, leaderboardListRect.w - 56, 18);
+    }
+
+    drawGameButton(leaderboardRefreshButton, "刷新榜单", "#ff9f00", "#ffe500", 18);
+    drawGameButton(leaderboardBackButton, "返回结算", "#0087ff", "#37f5ff", 18);
+
+    context.font = "800 12px sans-serif";
+    context.fillStyle = "rgba(255,255,255,0.58)";
+    context.textAlign = "center";
+    context.fillText("上下滑动查看完整前 50 名", STAGE_WIDTH / 2, 682);
     context.restore();
   }
 
@@ -2340,9 +2727,31 @@
         playUiSound();
         return;
       }
+      if (hitRect(point, settlementLeaderboardButton)) {
+        openLeaderboard();
+        playUiSound();
+        return;
+      }
       if (hitRect(point, settlementAdContinueButton)) {
         startAdReviveFlow();
         return;
+      }
+      return;
+    }
+    if (mode === "leaderboard") {
+      if (hitRect(point, leaderboardCloseButton) || hitRect(point, leaderboardBackButton)) {
+        closeLeaderboard();
+        playUiSound();
+        return;
+      }
+      if (hitRect(point, leaderboardRefreshButton)) {
+        loadLeaderboardTop(true);
+        playUiSound();
+        return;
+      }
+      if (hitRect(point, leaderboardListRect)) {
+        leaderboardDrag.active = true;
+        leaderboardDrag.lastY = point.y;
       }
       return;
     }
@@ -2402,10 +2811,21 @@
     dropCoin();
   }
 
-  function onTouchMove(x) {
+  function onTouchMove(x, y) {
+    if (mode === "leaderboard" && leaderboardDrag.active) {
+      var stageY = stageYFromScreen(y);
+      leaderboardState.scrollY += leaderboardDrag.lastY - stageY;
+      leaderboardDrag.lastY = stageY;
+      clampLeaderboardScroll();
+      return;
+    }
     if (mode === "playing") {
       setPointer(stageXFromScreen(x));
     }
+  }
+
+  function onTouchEnd() {
+    leaderboardDrag.active = false;
   }
 
   if (ttApi) {
@@ -2418,9 +2838,14 @@
     ttApi.onTouchMove(function (event) {
       var touch = event.touches && event.touches[0];
       if (touch) {
-        onTouchMove(touch.clientX);
+        onTouchMove(touch.clientX, touch.clientY);
       }
     });
+    if (typeof ttApi.onTouchEnd === "function") {
+      ttApi.onTouchEnd(function () {
+        onTouchEnd();
+      });
+    }
   } else if (typeof document !== "undefined") {
     canvas.addEventListener("pointerdown", function (event) {
       if (event && typeof event.preventDefault === "function") {
@@ -2439,8 +2864,22 @@
       if (event && typeof event.preventDefault === "function") {
         event.preventDefault();
       }
-      onTouchMove(event.clientX);
+      onTouchMove(event.clientX, event.clientY);
     });
+    canvas.addEventListener("pointerup", function () {
+      onTouchEnd();
+    });
+    canvas.addEventListener("pointercancel", function () {
+      onTouchEnd();
+    });
+    canvas.addEventListener("wheel", function (event) {
+      if (mode !== "leaderboard") return;
+      if (event && typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      leaderboardState.scrollY += event.deltaY || 0;
+      clampLeaderboardScroll();
+    }, { passive: false });
     canvas.addEventListener("contextmenu", function (event) {
       if (event && typeof event.preventDefault === "function") {
         event.preventDefault();
@@ -2497,6 +2936,14 @@
         statusText: reviveStatusText,
         adButton: settlementAdContinueButton,
         adSdkReady: !!getMetaH5AdApi()
+      },
+      leaderboard: {
+        entryButton: settlementLeaderboardButton,
+        status: leaderboardState.status,
+        count: leaderboardState.list.length,
+        errorText: leaderboardState.errorText,
+        topLimit: LEADERBOARD_TOP_LIMIT,
+        submittedScore: leaderboardLastSubmittedScore
       },
       score: score,
       highScore: highScore,
